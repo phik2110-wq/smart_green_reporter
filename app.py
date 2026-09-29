@@ -10,7 +10,7 @@ from google import genai
 from pydantic import BaseModel, Field
 
 # =========================================================
-# 1. CẤU HÌNH TRANG & CSS TÙY BIẾN SANG TRỌNG
+# 1. CẤU HÌNH TRANG & CSS ĐÃ SỬA LỖI HIỂN THỊ TAB
 # =========================================================
 st.set_page_config(
     page_title="Smart Green Reporter - Quản Lý Môi Trường",
@@ -22,8 +22,8 @@ st.markdown("""
     <style>
     /* Nền tổng thể nhẹ nhàng */
     .stApp {
-        background-color: #f2f7f4;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        background-color: #f4f8f5;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
     
     /* Ẩn Sidebar mặc định */
@@ -31,23 +31,21 @@ st.markdown("""
     
     /* Header Banner Xanh Môi Trường */
     .header-banner {
-        background: linear-gradient(135deg, #1b5e20 0%, #388e3c 50%, #66bb6a 100%);
-        padding: 28px 20px;
-        border-radius: 18px;
+        background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 60%, #4caf50 100%);
+        padding: 25px 20px;
+        border-radius: 16px;
         color: white;
         text-align: center;
         margin-bottom: 25px;
-        box-shadow: 0 8px 24px rgba(46, 125, 50, 0.22);
+        box-shadow: 0 6px 20px rgba(46, 125, 50, 0.18);
     }
     .header-banner h1 {
         color: white !important;
         font-weight: 800;
-        letter-spacing: 0.5px;
         margin-bottom: 6px;
-        text-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     .header-banner p {
-        font-size: 1.15rem;
+        font-size: 1.1rem;
         opacity: 0.95;
         margin: 0;
     }
@@ -55,30 +53,24 @@ st.markdown("""
     /* Thẻ Chọn Vai Trò */
     .role-card {
         background: white;
-        padding: 28px 22px;
-        border-radius: 18px;
-        border: 2px solid #e0f2f1;
-        box-shadow: 0 6px 20px rgba(0,0,0,0.04);
+        padding: 25px 20px;
+        border-radius: 16px;
+        border: 2px solid #c8e6c9;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.03);
         text-align: center;
-        transition: all 0.3s ease;
-    }
-    .role-card:hover {
-        border-color: #2e7d32;
-        box-shadow: 0 10px 25px rgba(46, 125, 50, 0.12);
-        transform: translateY(-3px);
     }
     .role-icon {
-        font-size: 3.2rem;
-        margin-bottom: 12px;
+        font-size: 3rem;
+        margin-bottom: 10px;
     }
 
     /* Thẻ Thống Kê KPI */
     .kpi-card {
         background: white;
         padding: 16px;
-        border-radius: 14px;
+        border-radius: 12px;
         text-align: center;
-        box-shadow: 0 3px 10px rgba(0,0,0,0.03);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
         border-left: 5px solid #2e7d32;
     }
     .kpi-number {
@@ -92,22 +84,31 @@ st.markdown("""
         font-weight: 600;
     }
 
-    /* Style Tab đẹp mắt */
+    /* Fix triệt để lỗi thiết kế Tab */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
+        gap: 12px !important;
+        background-color: transparent !important;
     }
     .stTabs [data-baseweb="tab"] {
-        height: 46px;
-        background-color: #ffffff;
-        border-radius: 10px;
-        padding: 0px 22px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.03);
-        font-weight: 600;
-        color: #2e7d32;
+        height: auto !important;
+        background-color: #ffffff !important;
+        border-radius: 10px !important;
+        padding: 12px 24px !important;
+        font-weight: 700 !important;
+        color: #2e7d32 !important;
+        border: 1px solid #c8e6c9 !important;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.03) !important;
     }
     .stTabs [aria-selected="true"] {
         background-color: #2e7d32 !important;
-        color: white !important;
+        color: #ffffff !important;
+        border-color: #2e7d32 !important;
+    }
+    .stTabs [aria-selected="true"] p {
+        color: #ffffff !important;
+    }
+    .stTabs [aria-selected="false"] p {
+        color: #2e7d32 !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -139,14 +140,13 @@ class VerificationSchema(BaseModel):
     ai_comment: str = Field(description="Nhận xét chi tiết của AI về kết quả dọn dẹp")
 
 # =========================================================
-# 2. CƠ SỞ DỮ LIỆU SQLITE & MIGRATION TỰ ĐỘNG (SỬA LỖI TRIỆT ĐỂ)
+# 2. CƠ SỞ DỮ LIỆU SQLITE & MIGRATION TỰ ĐỘNG
 # =========================================================
 DB_FILE = "reports.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # 1. Tạo bảng nếu chưa có
     c.execute('''
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,7 +166,6 @@ def init_db():
         )
     ''')
     
-    # 2. Tự động thêm cột nếu DB cũ bị thiếu (Tránh lỗi no such column)
     columns_to_check = [
         ("waste_type", "TEXT"),
         ("severity", "TEXT"),
@@ -180,12 +179,11 @@ def init_db():
         try:
             c.execute(f"ALTER TABLE reports ADD COLUMN {col_name} {col_type}")
         except sqlite3.OperationalError:
-            pass # Cột đã tồn tại
+            pass
             
     conn.commit()
     conn.close()
 
-# Khởi chạy & cập nhật DB ngay lập tức
 init_db()
 
 def save_report(location_name, lat, lng, description, image_path, waste_type, severity, assigned_role, action_plan):
@@ -224,12 +222,12 @@ STAFF_PIN = "1234"
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 SMART GREEN REPORTER</h1>
-        <p>Hệ Thống Phản Ánh, Điều Phối & AI Xác Minh Môi Trường Thông Minh</p>
+        <p>Hệ Thống Phản Ánh, Quản Lý & AI Xác Minh Môi Trường Thông Minh</p>
     </div>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# MÀN HÌNH CHỌN VAI TRÒ (NẾU CHƯA ĐĂNG NHẬP)
+# MÀN HÌNH CHỌN VAI TRÒ
 # =========================================================
 if st.session_state.user_role is None:
     st.markdown("<h3 style='text-align: center; color: #1b5e20; font-weight:700;'>👋 CHỌN VAI TRÒ TRUY CẬP HỆ THỐNG</h3>", unsafe_allow_html=True)
@@ -267,7 +265,7 @@ if st.session_state.user_role is None:
                 st.error("❌ Mã PIN chưa đúng! (Mã thử nghiệm: 1234)")
 
 # =========================================================
-# GIAO DIỆN CHÍNH (SAU KHI ĐĂNG NHẬP)
+# GIAO DIỆN CHÍNH
 # =========================================================
 else:
     col_nav1, col_nav2 = st.columns([3.5, 1.2])
@@ -374,7 +372,6 @@ else:
     elif st.session_state.user_role == "STAFF":
         reports = get_all_reports()
         
-        # Thống kê KPI
         total_reports = len(reports)
         pending_reports = sum(1 for r in reports if r[10] != "Đã hoàn thành")
         completed_reports = sum(1 for r in reports if r[10] == "Đã hoàn thành")
@@ -407,7 +404,6 @@ else:
                     with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — (Phân luồng: {role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
                         
-                        # Cột thông tin ban đầu
                         with c1:
                             st.markdown("##### 📸 Ảnh bằng chứng ô nhiễm ban đầu:")
                             if os.path.exists(r_img):
@@ -419,7 +415,6 @@ else:
                             st.markdown(f"• **📝 Mô tả từ dân:** {r_desc if r_desc else 'Không có'}")
                             st.info(f"💡 **Phương án gợi ý từ AI:**\n{r_plan}")
 
-                        # Cột tải ảnh dọn dẹp & AI kiểm chứng
                         with c2:
                             st.markdown("##### 🤖 XÁC MINH HOÀN THÀNH BẰNG AI")
                             if r_status == "Đã hoàn thành":
