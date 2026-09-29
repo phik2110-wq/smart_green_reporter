@@ -10,11 +10,11 @@ from google import genai
 from pydantic import BaseModel, Field
 
 # =========================================================
-# 1. CẤU HÌNH TRANG & CSS TÙY BIẾN ĐẸP MẮT
+# 1. CẤU HÌNH TRANG & CSS TÙY BIẾN SANG TRỌNG
 # =========================================================
 st.set_page_config(
-    page_title="Smart Green - Quản Lý Môi Trường Thông Minh",
-    page_icon="🌿",
+    page_title="Smart Green Reporter - Quản Lý Môi Trường",
+    page_icon="🌱",
     layout="wide"
 )
 
@@ -22,100 +22,92 @@ st.markdown("""
     <style>
     /* Nền tổng thể nhẹ nhàng */
     .stApp {
-        background-color: #f0f7f4;
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background-color: #f2f7f4;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     
     /* Ẩn Sidebar mặc định */
     [data-testid="stSidebar"] { display: none; }
     
-    /* Banner Header */
+    /* Header Banner Xanh Môi Trường */
     .header-banner {
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-        padding: 25px 20px;
-        border-radius: 16px;
+        background: linear-gradient(135deg, #1b5e20 0%, #388e3c 50%, #66bb6a 100%);
+        padding: 28px 20px;
+        border-radius: 18px;
         color: white;
         text-align: center;
         margin-bottom: 25px;
-        box-shadow: 0 10px 20px rgba(56, 239, 125, 0.2);
+        box-shadow: 0 8px 24px rgba(46, 125, 50, 0.22);
     }
     .header-banner h1 {
         color: white !important;
         font-weight: 800;
-        letter-spacing: 1px;
-        margin-bottom: 8px;
-        text-shadow: 0 2px 4px rgba(0,0,0,0.15);
+        letter-spacing: 0.5px;
+        margin-bottom: 6px;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     .header-banner p {
-        font-size: 1.1rem;
+        font-size: 1.15rem;
         opacity: 0.95;
         margin: 0;
     }
 
-    /* Thẻ chọn vai trò */
+    /* Thẻ Chọn Vai Trò */
     .role-card {
         background: white;
-        padding: 30px 20px;
-        border-radius: 20px;
+        padding: 28px 22px;
+        border-radius: 18px;
         border: 2px solid #e0f2f1;
-        box-shadow: 0 8px 25px rgba(0,0,0,0.05);
+        box-shadow: 0 6px 20px rgba(0,0,0,0.04);
         text-align: center;
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
+        transition: all 0.3s ease;
     }
     .role-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 12px 30px rgba(0,0,0,0.1);
         border-color: #2e7d32;
+        box-shadow: 0 10px 25px rgba(46, 125, 50, 0.12);
+        transform: translateY(-3px);
     }
     .role-icon {
-        font-size: 3.5rem;
-        margin-bottom: 15px;
+        font-size: 3.2rem;
+        margin-bottom: 12px;
     }
 
-    /* Thẻ thống kê KPI */
+    /* Thẻ Thống Kê KPI */
     .kpi-card {
         background: white;
-        padding: 18px 15px;
+        padding: 16px;
         border-radius: 14px;
         text-align: center;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+        box-shadow: 0 3px 10px rgba(0,0,0,0.03);
         border-left: 5px solid #2e7d32;
     }
     .kpi-number {
         font-size: 1.8rem;
-        font-weight: bold;
+        font-weight: 800;
         color: #2e7d32;
     }
     .kpi-label {
-        font-size: 0.9rem;
+        font-size: 0.88rem;
         color: #555;
+        font-weight: 600;
     }
 
-    /* Đổi kiểu dáng cho Tabs */
+    /* Style Tab đẹp mắt */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 12px;
+        gap: 10px;
     }
     .stTabs [data-baseweb="tab"] {
-        height: 48px;
+        height: 46px;
         background-color: #ffffff;
         border-radius: 10px;
-        padding: 0px 20px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+        padding: 0px 22px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.03);
         font-weight: 600;
+        color: #2e7d32;
     }
     .stTabs [aria-selected="true"] {
         background-color: #2e7d32 !important;
         color: white !important;
-    }
-
-    /* Khung Nhiệm vụ */
-    .task-card {
-        background-color: white;
-        border-radius: 14px;
-        padding: 15px;
-        margin-bottom: 15px;
-        border-left: 6px solid #2e7d32;
-        box-shadow: 0 3px 10px rgba(0,0,0,0.04);
     }
     </style>
 """, unsafe_allow_html=True)
@@ -147,13 +139,14 @@ class VerificationSchema(BaseModel):
     ai_comment: str = Field(description="Nhận xét chi tiết của AI về kết quả dọn dẹp")
 
 # =========================================================
-# 2. CƠ SỞ DỮ LIỆU SQLITE
+# 2. CƠ SỞ DỮ LIỆU SQLITE & MIGRATION TỰ ĐỘNG (SỬA LỖI TRIỆT ĐỂ)
 # =========================================================
 DB_FILE = "reports.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # 1. Tạo bảng nếu chưa có
     c.execute('''
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,9 +165,27 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # 2. Tự động thêm cột nếu DB cũ bị thiếu (Tránh lỗi no such column)
+    columns_to_check = [
+        ("waste_type", "TEXT"),
+        ("severity", "TEXT"),
+        ("assigned_role", "TEXT"),
+        ("action_plan", "TEXT"),
+        ("status", "TEXT DEFAULT 'Chờ xử lý'"),
+        ("cleaned_image_path", "TEXT"),
+        ("verification_note", "TEXT")
+    ]
+    for col_name, col_type in columns_to_check:
+        try:
+            c.execute(f"ALTER TABLE reports ADD COLUMN {col_name} {col_type}")
+        except sqlite3.OperationalError:
+            pass # Cột đã tồn tại
+            
     conn.commit()
     conn.close()
 
+# Khởi chạy & cập nhật DB ngay lập tức
 init_db()
 
 def save_report(location_name, lat, lng, description, image_path, waste_type, severity, assigned_role, action_plan):
@@ -212,16 +223,16 @@ STAFF_PIN = "1234"
 
 st.markdown("""
     <div class="header-banner">
-        <h1>🌿 SMART GREEN REPORTER</h1>
-        <p>Hệ Thống Phản Ánh, Quản Lý & AI Thẩm Định Môi Trường Thông Minh</p>
+        <h1>🌱 SMART GREEN REPORTER</h1>
+        <p>Hệ Thống Phản Ánh, Điều Phối & AI Xác Minh Môi Trường Thông Minh</p>
     </div>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# MÀN HÌNH CHỌN VAI TRÒ
+# MÀN HÌNH CHỌN VAI TRÒ (NẾU CHƯA ĐĂNG NHẬP)
 # =========================================================
 if st.session_state.user_role is None:
-    st.markdown("<h3 style='text-align: center; color: #1b5e20; font-weight:700;'>👋 CHỌN VAI TRÒ DÙNG HỆ THỐNG</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center; color: #1b5e20; font-weight:700;'>👋 CHỌN VAI TRÒ TRUY CẬP HỆ THỐNG</h3>", unsafe_allow_html=True)
     st.write("")
     
     _, col1, col2, _ = st.columns([0.3, 2, 2, 0.3], gap="large")
@@ -230,8 +241,8 @@ if st.session_state.user_role is None:
         st.markdown("""
         <div class="role-card">
             <div class="role-icon">👤</div>
-            <h3 style="color: #2e7d32; margin-bottom:10px;">NGƯỜI DÂN</h3>
-            <p style="color: #666; font-size: 0.95rem;">Gửi phản ánh các điểm rác thải ô nhiễm kèm hình ảnh & ghim vị trí thực tế trên bản đồ.</p>
+            <h3 style="color: #2e7d32; margin-bottom:8px;">NGƯỜI DÂN PHẢN ÁNH</h3>
+            <p style="color: #666; font-size: 0.92rem;">Gửi báo cáo ô nhiễm kèm hình ảnh thực tế và ghim tọa độ trực tiếp trên bản đồ.</p>
         </div>
         """, unsafe_allow_html=True)
         st.write("")
@@ -243,8 +254,8 @@ if st.session_state.user_role is None:
         st.markdown("""
         <div class="role-card">
             <div class="role-icon">🧹🏛️</div>
-            <h3 style="color: #1b5e20; margin-bottom:10px;">ĐỘI TÌNH NGUYỆN & CƠ QUAN</h3>
-            <p style="color: #666; font-size: 0.95rem;">Dashboard chung theo dõi phản ánh, nhận nhiệm vụ và tải ảnh dọn dẹp để AI thẩm định.</p>
+            <h3 style="color: #1b5e20; margin-bottom:8px;">ĐỘI TÌNH NGUYỆN & CƠ QUAN</h3>
+            <p style="color: #666; font-size: 0.92rem;">Dashboard theo dõi phản ánh, nhận nhiệm vụ và tải ảnh dọn dẹp để AI kiểm chứng.</p>
         </div>
         """, unsafe_allow_html=True)
         staff_pin = st.text_input("🔑 Mã bảo mật (PIN)", type="password", key="pin_staff", placeholder="Nhập PIN...")
@@ -253,15 +264,15 @@ if st.session_state.user_role is None:
                 st.session_state.user_role = "STAFF"
                 st.rerun()
             else:
-                st.error("❌ Mã bảo mật không chính xác! (Mã thử nghiệm: 1234)")
+                st.error("❌ Mã PIN chưa đúng! (Mã thử nghiệm: 1234)")
 
 # =========================================================
-# GIAO DIỆN CHÍNH
+# GIAO DIỆN CHÍNH (SAU KHI ĐĂNG NHẬP)
 # =========================================================
 else:
     col_nav1, col_nav2 = st.columns([3.5, 1.2])
     with col_nav1:
-        role_badge = "🟢 Giao diện Người Dân" if st.session_state.user_role == "CITIZEN" else "🛡️ Dashboard Đội Tình Nguyện & Cơ Quan"
+        role_badge = "🟢 Giao diện Người Dân Phản Ánh" if st.session_state.user_role == "CITIZEN" else "🛡️ Dashboard Đội Tình Nguyện & Cơ Quan"
         st.markdown(f"<h3 style='color: #1b5e20; margin:0;'>{role_badge}</h3>", unsafe_allow_html=True)
     with col_nav2:
         if st.button("🚪 Đổi vai trò / Đăng xuất", use_container_width=True):
@@ -284,15 +295,15 @@ else:
                 m = folium.Map(location=[default_lat, default_lng], zoom_start=13, tiles="CartoDB positron")
                 folium.TileLayer('OpenStreetMap').add_to(m)
                 
-                map_data = st_folium(m, height=280, width="100%", key="input_map")
+                map_data = st_folium(m, height=270, width="100%", key="input_map")
                 selected_lat, selected_lng = default_lat, default_lng
                 if map_data and map_data.get("last_clicked"):
                     selected_lat = map_data["last_clicked"]["lat"]
                     selected_lng = map_data["last_clicked"]["lng"]
-                    st.success(f"🎯 Đã chọn tọa độ: `{selected_lat:.5f}, {selected_lng:.5f}`")
+                    st.success(f"🎯 Đã ghim tọa độ: `{selected_lat:.5f}, {selected_lng:.5f}`")
 
                 location_name = st.text_input("Tên địa điểm / Con đường", placeholder="Ví dụ: Công viên 23/9, Quận 1")
-                description = st.text_area("Mô tả thêm (Tùy chọn)", placeholder="Mô tả hiện trạng, mùi hôi, loại rác...")
+                description = st.text_area("Mô tả thêm (Tùy chọn)", placeholder="Mô tả hiện trạng rác thải, mùi hôi...")
                 uploaded_file = st.file_uploader("📸 2. Tải ảnh thực tế điểm ô nhiễm *", type=["jpg", "jpeg", "png"])
                 
                 if uploaded_file:
@@ -301,11 +312,11 @@ else:
 
             with col2:
                 st.markdown("#### 🤖 3. AI Tự Động Phân Loại & Phân Luồng")
-                st.info("Hệ thống sẽ dùng AI để nhận diện loại rác, đánh giá mức độ ô nhiễm và chuyển trực tiếp tới đơn vị xử lý phù hợp.")
+                st.info("Hệ thống AI sẽ tự động phân tích hình ảnh, xác định loại rác và đề xuất phương án xử lý ngay lập tức.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
-                        st.error("⚠️ Vui lòng đính kèm hình ảnh ô nhiễm!")
+                        st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
                     else:
                         with st.spinner("🤖 AI Gemini đang phân tích hình ảnh..."):
                             try:
@@ -335,15 +346,15 @@ else:
                                     data["waste_type"], data["severity"], data["assigned_role"], data["action_plan"]
                                 )
                                 st.balloons()
-                                st.success("🎉 Gửi phản ánh thành công! Báo cáo đã được ghi nhận vào hệ thống.")
+                                st.success("🎉 Gửi phản ánh thành công! Báo cáo đã được ghi nhận.")
                                 st.markdown(f"• **Loại rác:** {data['waste_type']}")
                                 st.markdown(f"• **Mức độ:** {data['severity']}")
                                 st.markdown(f"• **Đơn vị tiếp nhận:** {'Đội Tình Nguyện' if data['assigned_role'] == 'VOLUNTEER' else 'Cơ Quan Chức Năng'}")
                             except Exception as e:
-                                st.error(f"Lỗi: {e}")
+                                st.error(f"Lỗi phân tích AI: {e}")
 
         with tab_c2:
-            st.markdown("#### 🗺️ Bản đồ các điểm ô nhiễm đang theo dõi")
+            st.markdown("#### 🗺️ Bản đồ các điểm ô nhiễm cộng đồng")
             reports = get_all_reports()
             if reports:
                 m_all = folium.Map(location=[reports[0][2], reports[0][3]], zoom_start=12, tiles="CartoDB positron")
@@ -373,11 +384,11 @@ else:
         with k1:
             st.markdown(f'<div class="kpi-card"><div class="kpi-number">{total_reports}</div><div class="kpi-label">Tổng phản ánh</div></div>', unsafe_allow_html=True)
         with k2:
-            st.markdown(f'<div class="kpi-card" style="border-left-color:#e53935;"><div class="kpi-number" style="color:#e53935;">{pending_reports}</div><div class="kpi-label">🔴 Cần xử lý</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kpi-card" style="border-left-color:#e53935;"><div class="kpi-number" style="color:#e53935;">{pending_reports}</div><div class="kpi-label">🔴 Cần dọn dẹp</div></div>', unsafe_allow_html=True)
         with k3:
-            st.markdown(f'<div class="kpi-card" style="border-left-color:#43a047;"><div class="kpi-number" style="color:#43a047;">{completed_reports}</div><div class="kpi-label">🟢 Đã dọn xong</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kpi-card" style="border-left-color:#43a047;"><div class="kpi-number" style="color:#43a047;">{completed_reports}</div><div class="kpi-label">🟢 Đã hoàn thành</div></div>', unsafe_allow_html=True)
         with k4:
-            st.markdown(f'<div class="kpi-card" style="border-left-color:#1e88e5;"><div class="kpi-number" style="color:#1e88e5;">{success_rate}%</div><div class="kpi-label">⚡ Tỷ lệ hoàn thành</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kpi-card" style="border-left-color:#1e88e5;"><div class="kpi-number" style="color:#1e88e5;">{success_rate}%</div><div class="kpi-label">⚡ Tỷ lệ khắc phục</div></div>', unsafe_allow_html=True)
         
         st.write("")
 
@@ -415,7 +426,7 @@ else:
                                 st.success("✅ Nhiệm vụ đã hoàn tất và được AI nghiệm thu!")
                                 if r_clean_img and os.path.exists(r_clean_img):
                                     st.image(r_clean_img, caption="Ảnh hiện trường sau khi dọn dẹp", use_container_width=True)
-                                st.markdown(f"**Kết quả thẩm định chi tiết:**\n{r_ver_note}")
+                                st.markdown(f"**Kết quả thẩm định từ AI:**\n{r_ver_note}")
                             else:
                                 st.write("Chụp/tải ảnh **mặt bằng đã sạch rác** lên để AI thẩm định:")
                                 clean_file = st.file_uploader(f"Tải ảnh đã dọn xong (Nhiệm vụ #{r_id})", type=["jpg", "png", "jpeg"], key=f"up_staff_{r_id}")
@@ -447,7 +458,7 @@ else:
                                             )
                                             v_data = json.loads(v_resp.text)
                                             
-                                            note = f"Điểm sạch AI đánh giá: {v_data['confidence_score']}/100\nNhận xét: {v_data['ai_comment']}"
+                                            note = f"Thăng điểm sạch AI đánh giá: {v_data['confidence_score']}/100\nNhận xét: {v_data['ai_comment']}"
                                             update_resolution(r_id, str(clean_save_path), note)
                                             
                                             st.balloons()
