@@ -1,5 +1,7 @@
 streamlit
-google-genai
-pillow
-folium
 streamlit-folium
+folium
+google-genai
+groq
+pydantic
+pillow
