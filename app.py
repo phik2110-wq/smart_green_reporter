@@ -72,7 +72,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. KHỞI TẠO CÁC API CLIENT (GEMINI & GROQ)
+# 2. KHỞI TẠO API CLIENTS
 # =========================================================
 raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
@@ -87,7 +87,7 @@ if gemini_key:
     try:
         gemini_client = genai.Client(api_key=gemini_key)
     except Exception as e:
-        st.warning(f"⚠️️ Không thể khởi tạo Gemini Client: {e}")
+        st.warning(f"⚠️ Không thể khởi tạo Gemini Client: {e}")
 
 groq_client = None
 if groq_key:
@@ -104,17 +104,19 @@ UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================================================
-# 3. HÀM XỬ LÝ AI ĐÃ TÍCH HỢP FALLBACK (GEMINI -> GROQ)
+# 3. HÀM XỬ LÝ AI VỚI CƠ CHẾ FALLBACK (GEMINI -> GROQ)
 # =========================================================
 def encode_image_to_base64(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 def call_groq_vision_api(image_path, system_instruction, response_format_schema):
-    """Gọi Groq Vision khi Gemini hết quota"""
+    """Gọi Groq Vision AI bằng danh sách các model dự phòng"""
+    if not groq_client:
+        raise Exception("Chưa cấu hình Groq API Client!")
+
     base64_image = encode_image_to_base64(image_path)
     
-    # Chuẩn hóa prompt yêu cầu xuất JSON theo Schema
     prompt = f"""
     {system_instruction}
     
@@ -122,28 +124,43 @@ def call_groq_vision_api(image_path, system_instruction, response_format_schema)
     {json.dumps(response_format_schema, ensure_ascii=False)}
     """
 
-    completion = groq_client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
+    # Danh sách các model Vision trên Groq
+    groq_models = [
+        "qwen-2.5-32b",
+        "llama-3.2-11b-vision-instruct",
+        "llama-3.2-90b-vision-preview"
+    ]
+    
+    last_err = None
+    for model_name in groq_models:
+        try:
+            completion = groq_client.chat.completions.create(
+                model=model_name,
+                messages=[
                     {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                            }
+                        ]
                     }
-                ]
-            }
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.1,
-    )
-    return json.loads(completion.choices[0].message.content)
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
+            return json.loads(completion.choices[0].message.content)
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise Exception(f"Tất cả các model Groq đều bị lỗi: {last_err}")
 
 def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_dict):
-    """Thử gọi Gemini trước, nếu bị lỗi 429 thì tự động chuyển sang Groq"""
-    # 1. THỬ GỌI GEMINI
+    """Thử Gemini trước, nếu gặp lỗi hết quota (429) sẽ tự động gọi Groq"""
+    # 1. THỬ DÙNG GEMINI
     if gemini_client:
         fallback_models = ["gemini-2.5-flash", "gemini-1.5-flash", primary_model_name]
         models_to_try = list(dict.fromkeys([m for m in fallback_models if m and "3.8" not in m]))
@@ -161,14 +178,14 @@ def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_d
                 )
                 return json.loads(response.text), "Gemini AI"
             except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "503" in err_str or "quota" in err_str.lower():
-                    time.sleep(1.0)
+                err_str = str(e).lower()
+                if any(kw in err_str for kw in ["429", "503", "quota", "resource_exhausted", "limit"]):
+                    time.sleep(0.5)
                     continue
                 else:
                     break
 
-    # 2. CHUYỂN SANG GROQ NẾU GEMINI BỊ LỖI QUOTA
+    # 2. CHUYỂN SANG GROQ KHI GEMINI GẶP LỖI HOẶC HẾT QUOTA
     if groq_client:
         try:
             st.toast("⚡ Gemini hết hạn ngạch ngày. Đã tự động chuyển sang Groq Vision AI...", icon="🔄")
@@ -177,16 +194,16 @@ def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_d
         except Exception as groq_err:
             raise Exception(f"Cả Gemini và Groq đều bị lỗi: {groq_err}")
 
-    raise Exception("Hệ thống AI bận hoặc hết hạn ngạch. Vui lòng thử lại sau!")
+    raise Exception("Hệ thống AI hiện đang bận. Vui lòng thử lại sau ít phút!")
 
-# Schemas cấu trúc
+# Schemas cấu trúc JSON cho Pydantic
 class WasteAnalysisSchema(BaseModel):
-    contains_waste: bool = Field(description="True nếu ảnh thực sự chứa rác thải gây ô nhiễm")
-    is_waste_amount_sufficient: bool = Field(description="True nếu lượng rác đủ nhiều để cấu thành ô nhiễm")
-    rejection_reason: str = Field(description="Lý do từ chối ngắn gọn nếu không hợp lệ")
+    contains_waste: bool = Field(description="True nếu ảnh chứa rác thải ô nhiễm")
+    is_waste_amount_sufficient: bool = Field(description="True nếu khối lượng rác đủ nhiều")
+    rejection_reason: str = Field(description="Lý do từ chối nếu không hợp lệ")
     waste_type: str = Field(description="Loại rác phát hiện")
-    severity: str = Field(description="Mức độ ô nhiễm: Thấp, Trung bình, hoặc Nghiêm trọng")
-    assigned_role: str = Field(description="'VOLUNTEER' (rác nhẹ) hoặc 'AUTHORITY' (rác nặng)")
+    severity: str = Field(description="Mức độ: Thấp, Trung bình, hoặc Nghiêm trọng")
+    assigned_role: str = Field(description="'VOLUNTEER' (nhẹ) hoặc 'AUTHORITY' (nặng)")
     action_plan: str = Field(description="Phương án xử lý")
 
 json_waste_example = {
@@ -302,7 +319,7 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# CHỌN VAI TRÒ
+# LỰA CHỌN VAI TRÒ
 if st.session_state.user_role is None:
     st.markdown("<h3 style='text-align: center; color: #1b5e20;'>👋 CHỌN VAI TRÒ TRUY CẬP HỆ THỐNG</h3>", unsafe_allow_html=True)
     st.write("")
@@ -470,7 +487,7 @@ else:
         
         st.write("")
 
-        # QUẢN TRỊ & XÓA LỊCH SỬ
+        # QUẢN TRỊ SYSTEM & RESET DATABASE
         with st.expander("⚙️ Quản trị hệ thống & Xóa lịch sử dữ liệu"):
             st.warning("⚠️ Hành động này sẽ xóa vĩnh viễn toàn bộ danh sách phản ánh, lịch sử dọn dẹp và điểm vinh danh!")
             if st.button("🗑 XÓA SẠCH LỊCH SỬ BÁO CÁO (RESET SYSTEM)", type="primary"):
@@ -488,7 +505,7 @@ else:
                     r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
                     
                     status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
-                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
+                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
                     
                     with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
@@ -513,7 +530,7 @@ else:
                                 
                                 if clean_file and st.button(f"🚀 AI Thẩm Định & Tích Điểm #{r_id}", type="primary"):
                                     if not team_name_input.strip():
-                                        st.error("⚠ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
+                                        st.error("⚠️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
                                         with st.spinner("🤖 AI đang đối chiếu hình ảnh (Yêu cầu làm sạch > 70%)..."):
                                             try:
