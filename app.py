@@ -11,17 +11,17 @@ from google import genai
 from pydantic import BaseModel, Field
 
 # =========================================================
-# 1. CẤU HÌNH TRANG & CSS (SỬA LỖI GIAO DIỆN / DARK MODE)
+# 1. CẤU HÌNH TRANG & CSS (TỐI ƯU GIAO DIỆN & MÀU CHỮ)
 # =========================================================
 st.set_page_config(
-    page_title="Smart Green Reporter - Quản Lý Môi Trường",
+    page_title="Urban GreenEye AI - Mắt Xanh Đô Thị",
     page_icon="🌱",
     layout="wide"
 )
 
 st.markdown("""
     <style>
-    /* Ép màu nền sáng và định dạng chữ tương phản rõ ràng */
+    /* Nền sáng và chữ màu tối tương phản rõ ràng */
     .stApp { background-color: #f4f8f5 !important; font-family: 'Segoe UI', Roboto, sans-serif; }
     [data-testid="stSidebar"] { display: none; }
     
@@ -57,7 +57,7 @@ st.markdown("""
     .kpi-number { font-size: 1.8rem; font-weight: 800; color: #2e7d32 !important; }
     .kpi-label { font-size: 0.88rem; color: #555 !important; font-weight: 600; }
 
-    /* Fix CSS Tab */
+    /* Định dạng Tab mượt mà */
     .stTabs [data-baseweb="tab-list"] { gap: 12px !important; background-color: transparent !important; }
     .stTabs [data-baseweb="tab"] {
         height: auto !important; background-color: #ffffff !important;
@@ -80,7 +80,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. XỬ LÝ KHỞI TẠO SDK GEMINI & CHỐNG LỖI XÁC THỰC (401)
+# 2. XỬ LÝ KHỞI TẠO GEMINI CLIENT & CHỐNG LỖI 401
 # =========================================================
 raw_api_key = st.secrets.get("GEMINI_API_KEY", "")
 api_key = str(raw_api_key).strip().strip('"').strip("'")
@@ -90,7 +90,7 @@ if not api_key:
     st.error("⚠️ Chưa cấu hình GEMINI_API_KEY trong Secrets trên Streamlit Cloud!")
     st.stop()
 
-# Đặt biến môi trường chuẩn cho thư viện google-genai
+# Đặt biến môi trường hệ thống cho SDK google-genai
 os.environ["GEMINI_API_KEY"] = api_key
 
 try:
@@ -103,24 +103,25 @@ UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================================================
-# 3. HÀM CHỐNG LỖI QUÁ TẢI 503 / 429 & KHÔNG TÌM THẤY 404
+# 3. HÀM CHỐNG LỖI AI (LỌC BỎ MODEL CŨ VÀ RETRY CHUẨN)
 # =========================================================
 def generate_content_with_retry(client, contents, schema, primary_model):
     """
-    Tự động Retry khi gặp 503/429 và Fallback sang model dự phòng nếu model chính bận hoặc lỗi 404.
+    Tự động Retry khi gặp lỗi 503/429 và Fallback sang các model thế hệ mới còn hỗ trợ.
     """
+    # Danh sách model chuẩn xác hiện tại
     fallback_models = [
         primary_model,
         "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-1.5-flash"
+        "gemini-3.8-flash",
+        "gemini-2.5-pro"
     ]
-    # Loại bỏ các tên trùng lặp nhưng giữ nguyên thứ tự ưu tiên
-    models_to_try = list(dict.fromkeys([m for m in fallback_models if m]))
+    # Lọc bỏ trùng lặp và xóa các tên model 1.5 cũ đã ngưng hỗ trợ
+    models_to_try = list(dict.fromkeys([m for m in fallback_models if m and "1.5" not in m]))
 
     last_error = None
     for model in models_to_try:
-        for attempt in range(3): # Thử lại tối đa 3 lần mỗi model
+        for attempt in range(2): # Thử lại tối đa 2 lần cho mỗi model
             try:
                 response = client.models.generate_content(
                     model=model,
@@ -134,25 +135,25 @@ def generate_content_with_retry(client, contents, schema, primary_model):
             except Exception as e:
                 err_str = str(e)
                 last_error = e
-                # Lỗi quá tải (503) hoặc Rate limit (429) -> Đợi 2 giây rồi thử lại
+                # Quá tải (503) hoặc chạm giới hạn (429) -> Đợi 1.5 giây rồi thử lại
                 if "503" in err_str or "429" in err_str:
-                    time.sleep(2)
+                    time.sleep(1.5)
                     continue
-                # Lỗi không tìm thấy Model (404) -> Chuyển ngay sang model dự phòng tiếp theo
+                # Model không tồn tại (404) -> Chuyển ngay sang model tiếp theo
                 elif "404" in err_str:
                     break
                 else:
                     raise e
                     
-    raise Exception(f"AI hiện đang bận ở tất cả các model dự phòng. Lỗi chi tiết: {last_error}")
+    raise Exception(f"Hệ thống AI hiện đang bận. Lỗi chi tiết: {last_error}")
 
 # =========================================================
 # 4. SCHEMAS PYDANTIC (ANTI-SPAM & VERIFICATION)
 # =========================================================
 class WasteAnalysisSchema(BaseModel):
-    contains_waste: bool = Field(description="True nếu ảnh thực sự chứa rác thải, False nếu là ảnh selfie, cảnh vật sạch, động vật, đồ vật bình thường...")
-    is_waste_amount_sufficient: bool = Field(description="True nếu khối lượng rác đủ nhiều để thành bãi ô nhiễm, False nếu chỉ có 1-2 mẩu rác nhỏ lẻ.")
-    rejection_reason: str = Field(description="Lý do từ chối chi tiết bằng tiếng Việt nếu ảnh bị loại. Điền '' nếu hợp lệ.")
+    contains_waste: bool = Field(description="True nếu ảnh thực sự chứa rác thải, False nếu là ảnh selfie, cảnh vật sạch, động vật...")
+    is_waste_amount_sufficient: bool = Field(description="True nếu khối lượng rác đủ nhiều để cấu thành ô nhiễm, False nếu chỉ có 1-2 mẩu rác rất nhỏ.")
+    rejection_reason: str = Field(description="Lý do từ chối ngắn gọn nếu không hợp lệ. Điền '' nếu hợp lệ.")
     waste_type: str = Field(description="Các loại rác phát hiện trong hình (nếu hợp lệ)")
     severity: str = Field(description="Mức độ ô nhiễm: Thấp, Trung bình, hoặc Nghiêm trọng")
     assigned_role: str = Field(description="Chỉ chọn 'VOLUNTEER' (rác nhẹ) hoặc 'AUTHORITY' (rác nặng/nguy hại)")
@@ -160,7 +161,7 @@ class WasteAnalysisSchema(BaseModel):
 
 class VerificationSchema(BaseModel):
     is_cleaned: bool = Field(description="True nếu địa điểm đã được dọn sạch từ 70% trở lên, False nếu dưới 70%")
-    confidence_score: int = Field(description="Thang điểm từ 0 đến 100 đánh giá tỷ lệ dọn dẹp sạch rác")
+    confidence_score: int = Field(description="Thang điểm từ 0 đến 100 đánh giá tỷ lệ dọn sạch rác")
     ai_comment: str = Field(description="Nhận xét chi tiết của AI về kết quả dọn dẹp")
     earned_points: int = Field(description="Điểm cộng vinh danh (từ 10 đến 50 điểm) nếu đạt tiêu chuẩn trên 70%, điền 0 nếu dưới 70%")
 
@@ -254,8 +255,8 @@ STAFF_PIN = "1234"
 
 st.markdown("""
     <div class="header-banner">
-        <h1>🌱 SMART GREEN REPORTER</h1>
-        <p>Hệ Thống Báo Cáo Môi Trường & Thẩm Định AI Chống Spam</p>
+        <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
+        <p>Hệ Thống Phản Ánh Môi Trường & Thẩm Định AI Chống Spam</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -318,8 +319,9 @@ else:
             with col1:
                 st.markdown("#### 📍 1. Chọn vị trí & Điền thông tin")
                 default_lat, default_lng = 10.7769, 106.7009
-                m = folium.Map(location=[default_lat, default_lng], zoom_start=13, tiles="CartoDB positron")
-                folium.TileLayer('OpenStreetMap').add_to(m)
+                
+                # Sửa triệt để lỗi bản đồ: Sử dụng OpenStreetMap trực tiếp
+                m = folium.Map(location=[default_lat, default_lng], zoom_start=13, tiles="OpenStreetMap")
                 
                 map_data = st_folium(m, height=270, width="100%", key="input_map")
                 selected_lat, selected_lng = default_lat, default_lng
@@ -337,8 +339,8 @@ else:
                     st.image(image, caption="Ảnh thực tế đã tải", use_container_width=True)
 
             with col2:
-                st.markdown("#### 🤖 3. AI Tự Động Phân Loại & Kiểm Định Anti-Spam")
-                st.info("Hệ thống AI sẽ tự động phân tích hình ảnh để lọc bỏ ảnh spam/không hợp lệ trước khi tiếp nhận.")
+                st.markdown("#### 🤖 3. AI Tự Động Phân Loại & Anti-Spam")
+                st.info("Hệ thống AI sẽ tự động kiểm tra ảnh rác thải thực tế & loại bỏ ảnh spam trước khi tiếp nhận.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
@@ -351,11 +353,11 @@ else:
                                     f.write(uploaded_file.getbuffer())
 
                                 prompt = (
-                                    "Phân tích bức ảnh này để làm báo cáo môi trường:\n"
-                                    "1. KIỂM TRA RÁC: Ảnh có thực sự chứa rác thải gây ô nhiễm không? (Nếu là ảnh chân dung, động vật, phong cảnh sạch, đồ vật bình thường... -> contains_waste = False).\n"
-                                    "2. LƯỢNG RÁC: Khối lượng rác có đủ lớn để tạo thành bãi ô nhiễm không? (Nếu chỉ có 1 vài mẩu rác rất nhỏ lẻ không đáng kể -> is_waste_amount_sufficient = False).\n"
-                                    "3. Nếu không hợp lệ, điền lý do ngắn gọn vào rejection_reason.\n"
-                                    "4. Nếu hợp lệ: Xác định waste_type, severity (Thấp/Trung bình/Nhiêm trọng), và phân công assigned_role: Rác sinh hoạt/nhẹ -> 'VOLUNTEER', Rác xây dựng/độc hại/khối lượng lớn -> 'AUTHORITY'."
+                                    "Phân tích bức ảnh này để báo cáo môi trường:\n"
+                                    "1. KIỂM TRA RÁC: Ảnh có thực sự chứa rác thải gây ô nhiễm không? (Nếu là ảnh selfie, cảnh vật sạch, thú cưng... -> contains_waste = False).\n"
+                                    "2. LƯỢNG RÁC: Khối lượng rác có đủ lớn để tạo thành bãi ô nhiễm không? (Nếu chỉ có 1 vài mẩu rác rất nhỏ không đáng kể -> is_waste_amount_sufficient = False).\n"
+                                    "3. Nếu không hợp lệ, điền lý do vào rejection_reason.\n"
+                                    "4. Nếu hợp lệ: Phân loại waste_type, severity (Thấp/Trung bình/Nhiêm trọng), và phân công assigned_role: Rác sinh hoạt/nhẹ -> 'VOLUNTEER', Rác xây dựng/độc hại/khối lượng lớn -> 'AUTHORITY'."
                                 )
                                 
                                 response = generate_content_with_retry(
@@ -366,13 +368,13 @@ else:
                                 )
                                 data = json.loads(response.text)
                                 
-                                # XỬ LÝ KẾT QUẢ ANTI-SPAM
+                                # ANTI-SPAM
                                 if not data.get("contains_waste", False):
                                     st.error("❌ BÁO CÁO BỊ TỪ CHỐI (ẢNH KHÔNG HỢP LỆ)!")
                                     st.warning(f"🤖 **Phản hồi từ AI:** {data.get('rejection_reason', 'Ảnh tải lên không phát hiện rác thải ô nhiễm.')}")
                                 elif not data.get("is_waste_amount_sufficient", False):
                                     st.error("❌ BÁO CÁO BỊ TỪ CHỐI (LƯỢNG RÁC KHÔNG ĐỦ NGƯỠNG)!")
-                                    st.warning(f"🤖 **Phản hồi từ AI:** {data.get('rejection_reason', 'Khối lượng rác quá ít không đủ tạo thành điểm ô nhiễm cần dọn dẹp.')}")
+                                    st.warning(f"🤖 **Phản hồi từ AI:** {data.get('rejection_reason', 'Khối lượng rác quá ít không đủ tạo thành bãi ô nhiễm cần dọn dẹp.')}")
                                 else:
                                     final_loc = location_name if location_name else f"Tọa độ ({selected_lat:.4f}, {selected_lng:.4f})"
                                     save_report(final_loc, selected_lat, selected_lng, description, str(save_path), data["waste_type"], data["severity"], data["assigned_role"], data["action_plan"])
@@ -385,7 +387,7 @@ else:
             st.markdown("#### 🗺️ Bản đồ các điểm ô nhiễm cộng đồng")
             reports = get_all_reports()
             if reports:
-                m_all = folium.Map(location=[reports[0][2], reports[0][3]], zoom_start=12, tiles="CartoDB positron")
+                m_all = folium.Map(location=[reports[0][2], reports[0][3]], zoom_start=12, tiles="OpenStreetMap")
                 for r in reports:
                     color = "green" if r[10] == "Đã hoàn thành" else "red"
                     folium.Marker([r[2], r[3]], popup=f"<b>{r[1]}</b><br>Trạng thái: {r[10]}", icon=folium.Icon(color=color, icon="leaf")).add_to(m_all)
@@ -445,7 +447,7 @@ else:
                                 
                                 if clean_file and st.button(f"🚀 AI Thẩm Định & Tích Điểm #{r_id}", type="primary"):
                                     if not team_name_input.strip():
-                                        st.error("⚠️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
+                                        st.error("⚠️️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
                                         with st.spinner("🤖 AI đang so sánh đối chiếu hình ảnh (Yêu cầu làm sạch > 70%)..."):
                                             try:
@@ -515,7 +517,7 @@ else:
         with tab_s3:
             st.markdown("#### 🗺️ Bản đồ quản lý sự cố")
             if reports:
-                m_staff = folium.Map(location=[reports[0][2], reports[0][3]], zoom_start=12, tiles="CartoDB positron")
+                m_staff = folium.Map(location=[reports[0][2], reports[0][3]], zoom_start=12, tiles="OpenStreetMap")
                 for r in reports:
                     color = "green" if r[10] == "Đã hoàn thành" else ("orange" if r[8] == "VOLUNTEER" else "red")
                     folium.Marker([r[2], r[3]], popup=f"<b>{r[1]}</b><br>Trạng thái: {r[10]}", icon=folium.Icon(color=color, icon="leaf")).add_to(m_staff)
