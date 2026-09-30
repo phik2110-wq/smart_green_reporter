@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import time
 import sqlite3
 from pathlib import Path
@@ -8,10 +9,11 @@ from PIL import Image
 import folium
 from streamlit_folium import st_folium
 from google import genai
+from groq import Groq
 from pydantic import BaseModel, Field
 
 # =========================================================
-# 1. CẤU HÌNH TRANG & CSS (TỐI ƯU GIAO DIỆN)
+# 1. CẤU HÌNH TRANG & CSS
 # =========================================================
 st.set_page_config(
     page_title="Urban GreenEye AI - Mắt Xanh Đô Thị",
@@ -24,21 +26,15 @@ st.markdown("""
     .stApp { background-color: #f4f8f5 !important; font-family: 'Segoe UI', Roboto, sans-serif; }
     [data-testid="stSidebar"] { display: none; }
     
-    .stApp p, .stApp label, .stApp span, .stApp div {
-        color: #1b5e20 !important;
-    }
+    .stApp p, .stApp label, .stApp span, .stApp div { color: #1b5e20 !important; }
     .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
-        color: #1b5e20 !important;
-        font-weight: 700 !important;
+        color: #1b5e20 !important; font-weight: 700 !important;
     }
 
     .header-banner {
         background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 60%, #4caf50 100%);
-        padding: 22px 20px;
-        border-radius: 16px;
-        color: white !important;
-        text-align: center;
-        margin-bottom: 25px;
+        padding: 22px 20px; border-radius: 16px; color: white !important;
+        text-align: center; margin-bottom: 25px;
         box-shadow: 0 6px 20px rgba(46, 125, 50, 0.18);
     }
     .header-banner h1, .header-banner p { color: white !important; }
@@ -63,9 +59,7 @@ st.markdown("""
         font-weight: 700 !important; color: #2e7d32 !important;
         border: 1px solid #c8e6c9 !important;
     }
-    .stTabs [aria-selected="true"] {
-        background-color: #2e7d32 !important; color: #ffffff !important;
-    }
+    .stTabs [aria-selected="true"] { background-color: #2e7d32 !important; color: #ffffff !important; }
     .stTabs [aria-selected="true"] p { color: #ffffff !important; }
     .stTabs [aria-selected="false"] p { color: #2e7d32 !important; }
     
@@ -78,95 +72,148 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. KHỞI TẠO GEMINI CLIENT
+# 2. KHỞI TẠO CÁC API CLIENT (GEMINI & GROQ)
 # =========================================================
-raw_api_key = st.secrets.get("GEMINI_API_KEY", "")
-api_key = str(raw_api_key).strip().strip('"').strip("'")
+raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
+
+raw_groq_key = st.secrets.get("GROQ_API_KEY", "")
+groq_key = str(raw_groq_key).strip().strip('"').strip("'")
+
 primary_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
 
-if not api_key:
-    st.error("⚠️ Chưa cấu hình GEMINI_API_KEY trong Secrets trên Streamlit Cloud!")
-    st.stop()
+gemini_client = None
+if gemini_key:
+    try:
+        gemini_client = genai.Client(api_key=gemini_key)
+    except Exception as e:
+        st.warning(f"⚠️️ Không thể khởi tạo Gemini Client: {e}")
 
-os.environ["GEMINI_API_KEY"] = api_key
+groq_client = None
+if groq_key:
+    try:
+        groq_client = Groq(api_key=groq_key)
+    except Exception as e:
+        st.warning(f"⚠️ Không thể khởi tạo Groq Client: {e}")
 
-try:
-    client = genai.Client(api_key=api_key)
-except Exception as e:
-    st.error(f"⚠️ Lỗi khởi tạo Gemini Client: {e}")
+if not gemini_client and not groq_client:
+    st.error("⚠️ Chưa cấu hình GEMINI_API_KEY hoặc GROQ_API_KEY trong Secrets trên Streamlit Cloud!")
     st.stop()
 
 UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================================================
-# 3. HÀM GỌI AI ĐÃ SỬA LỖI 429 RESOURCE EXHAUSTED
+# 3. HÀM XỬ LÝ AI ĐÃ TÍCH HỢP FALLBACK (GEMINI -> GROQ)
 # =========================================================
-def generate_content_with_retry(client, contents, schema, primary_model):
-    # Danh sách model Flash miễn phí & ổn định nhất, tránh các dòng Pro gây tràn quota[cite: 8]
-    fallback_models = [
-        "gemini-2.5-flash",
-        "gemini-1.5-flash",
-        primary_model
-    ]
-    
-    # Loại bỏ triệt để các model dễ bị quá tải hoặc không hỗ trợ Free Tier[cite: 8]
-    deprecated_or_pro_models = [
-        "gemini-3.1-pro", 
-        "gemini-3.1-pro-preview", 
-        "gemini-2.5-pro", 
-        "models/gemini-2.5-pro"
-    ]
-    
-    models_to_try = list(dict.fromkeys([m for m in fallback_models if m and m not in deprecated_or_pro_models]))
+def encode_image_to_base64(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
 
-    last_error = None
-    for model in models_to_try:
-        for attempt in range(2):
+def call_groq_vision_api(image_path, system_instruction, response_format_schema):
+    """Gọi Groq Vision khi Gemini hết quota"""
+    base64_image = encode_image_to_base64(image_path)
+    
+    # Chuẩn hóa prompt yêu cầu xuất JSON theo Schema
+    prompt = f"""
+    {system_instruction}
+    
+    BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THEO ĐÚNG CẤU TRÚC SAU:
+    {json.dumps(response_format_schema, ensure_ascii=False)}
+    """
+
+    completion = groq_client.chat.completions.create(
+        model="llama-3.2-11b-vision-preview",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                    }
+                ]
+            }
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+    )
+    return json.loads(completion.choices[0].message.content)
+
+def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_dict):
+    """Thử gọi Gemini trước, nếu bị lỗi 429 thì tự động chuyển sang Groq"""
+    # 1. THỬ GỌI GEMINI
+    if gemini_client:
+        fallback_models = ["gemini-2.5-flash", "gemini-1.5-flash", primary_model_name]
+        models_to_try = list(dict.fromkeys([m for m in fallback_models if m and "3.8" not in m]))
+        
+        pil_img = Image.open(image_path)
+        for model in models_to_try:
             try:
-                response = client.models.generate_content(
+                response = gemini_client.models.generate_content(
                     model=model,
-                    contents=contents,
+                    contents=[pil_img, prompt],
                     config={
                         "response_mime_type": "application/json",
-                        "response_schema": schema
+                        "response_schema": pydantic_schema
                     }
                 )
-                return response
+                return json.loads(response.text), "Gemini AI"
             except Exception as e:
                 err_str = str(e)
-                last_error = e
-                # Khi gặp lỗi 429 hoặc 503, tự động tạm dừng 2 giây để reset rate limit[cite: 8]
-                if "429" in err_str or "503" in err_str:
-                    time.sleep(2.0)
+                if "429" in err_str or "503" in err_str or "quota" in err_str.lower():
+                    time.sleep(1.0)
                     continue
-                elif "404" in err_str:
-                    break
                 else:
-                    raise e
-                    
-    raise Exception(f"Hệ thống AI bận hoặc hết hạn ngạch Free Tier. Lỗi chi tiết: {last_error}")
+                    break
 
-# =========================================================
-# 4. SCHEMAS PYDANTIC (ANTI-SPAM & THẨM ĐỊNH)
-# =========================================================
+    # 2. CHUYỂN SANG GROQ NẾU GEMINI BỊ LỖI QUOTA
+    if groq_client:
+        try:
+            st.toast("⚡ Gemini hết hạn ngạch ngày. Đã tự động chuyển sang Groq Vision AI...", icon="🔄")
+            res_data = call_groq_vision_api(image_path, prompt, json_example_dict)
+            return res_data, "Groq AI"
+        except Exception as groq_err:
+            raise Exception(f"Cả Gemini và Groq đều bị lỗi: {groq_err}")
+
+    raise Exception("Hệ thống AI bận hoặc hết hạn ngạch. Vui lòng thử lại sau!")
+
+# Schemas cấu trúc
 class WasteAnalysisSchema(BaseModel):
-    contains_waste: bool = Field(description="True nếu ảnh thực sự chứa rác thải, False nếu là ảnh selfie, cảnh vật sạch, động vật...")
-    is_waste_amount_sufficient: bool = Field(description="True nếu khối lượng rác đủ nhiều để cấu thành ô nhiễm, False nếu chỉ có 1-2 mẩu rác rất nhỏ.")
-    rejection_reason: str = Field(description="Lý do từ chối ngắn gọn nếu không hợp lệ. Điền '' nếu hợp lệ.")
-    waste_type: str = Field(description="Các loại rác phát hiện trong hình (nếu hợp lệ)")
+    contains_waste: bool = Field(description="True nếu ảnh thực sự chứa rác thải gây ô nhiễm")
+    is_waste_amount_sufficient: bool = Field(description="True nếu lượng rác đủ nhiều để cấu thành ô nhiễm")
+    rejection_reason: str = Field(description="Lý do từ chối ngắn gọn nếu không hợp lệ")
+    waste_type: str = Field(description="Loại rác phát hiện")
     severity: str = Field(description="Mức độ ô nhiễm: Thấp, Trung bình, hoặc Nghiêm trọng")
-    assigned_role: str = Field(description="Chỉ chọn 'VOLUNTEER' (rác nhẹ) hoặc 'AUTHORITY' (rác nặng/nguy hại)")
-    action_plan: str = Field(description="Phương án xử lý chi tiết")
+    assigned_role: str = Field(description="'VOLUNTEER' (rác nhẹ) hoặc 'AUTHORITY' (rác nặng)")
+    action_plan: str = Field(description="Phương án xử lý")
+
+json_waste_example = {
+    "contains_waste": True,
+    "is_waste_amount_sufficient": True,
+    "rejection_reason": "",
+    "waste_type": "Rác nhựa, túi nilon",
+    "severity": "Trung bình",
+    "assigned_role": "VOLUNTEER",
+    "action_plan": "Cần thu gom túi nilon và phân loại rác tái chế"
+}
 
 class VerificationSchema(BaseModel):
-    is_cleaned: bool = Field(description="True nếu địa điểm đã được dọn sạch từ 70% trở lên, False nếu dưới 70%")
-    confidence_score: int = Field(description="Thang điểm từ 0 đến 100 đánh giá tỷ lệ dọn sạch rác")
-    ai_comment: str = Field(description="Nhận xét chi tiết của AI về kết quả dọn dẹp")
-    earned_points: int = Field(description="Điểm cộng vinh danh (từ 10 đến 50 điểm) nếu đạt tiêu chuẩn trên 70%, điền 0 nếu dưới 70%")
+    is_cleaned: bool = Field(description="True nếu địa điểm đã dọn sạch > 70%")
+    confidence_score: int = Field(description="Điểm % làm sạch (0-100)")
+    ai_comment: str = Field(description="Nhận xét chi tiết")
+    earned_points: int = Field(description="Điểm cộng (10-50) nếu đạt trên 70%")
+
+json_verify_example = {
+    "is_cleaned": True,
+    "confidence_score": 85,
+    "ai_comment": "Khu vực đã được dọn dẹp sạch rác thải nhựa ban đầu.",
+    "earned_points": 30
+}
 
 # =========================================================
-# 5. CƠ SỞ DỮ LIỆU SQLITE
+# 4. CƠ SỞ DỮ LIỆU SQLITE
 # =========================================================
 DB_FILE = "reports.db"
 
@@ -193,19 +240,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
-    columns_to_check = [
-        ("waste_type", "TEXT"), ("severity", "TEXT"), ("assigned_role", "TEXT"),
-        ("action_plan", "TEXT"), ("status", "TEXT DEFAULT 'Chờ xử lý'"),
-        ("cleaned_image_path", "TEXT"), ("verification_note", "TEXT"),
-        ("cleaner_team", "TEXT"), ("points_earned", "INTEGER DEFAULT 0")
-    ]
-    for col_name, col_type in columns_to_check:
-        try:
-            c.execute(f"ALTER TABLE reports ADD COLUMN {col_name} {col_type}")
-        except sqlite3.OperationalError:
-            pass
-            
     conn.commit()
     conn.close()
 
@@ -254,7 +288,7 @@ def clear_all_history():
     conn.close()
 
 # =========================================================
-# 6. GIAO DIỆN CHÍNH
+# 5. GIAO DIỆN CHÍNH
 # =========================================================
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
@@ -264,7 +298,7 @@ STAFF_PIN = "1234"
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
-        <p>Hệ Thống Phản Ánh Môi Trường & Thẩm Định AI Chống Spam (Optimized Flash AI)</p>
+        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp Đa AI (Gemini & Groq Fallback)</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -327,9 +361,7 @@ else:
             with col1:
                 st.markdown("#### 📍 1. Chọn vị trí & Điền thông tin")
                 default_lat, default_lng = 10.7769, 106.7009
-                
                 m = folium.Map(location=[default_lat, default_lng], zoom_start=13, tiles="OpenStreetMap")
-                
                 map_data = st_folium(m, height=270, width="100%", key="input_map")
                 selected_lat, selected_lng = default_lat, default_lng
                 if map_data and map_data.get("last_clicked"):
@@ -346,14 +378,14 @@ else:
                     st.image(image, caption="Ảnh thực tế đã tải", use_container_width=True)
 
             with col2:
-                st.markdown("#### 🤖 3. AI Tự Động Phân Loại & Anti-Spam (Gemini Flash)")
-                st.info("Hệ thống AI Gemini sẽ tự động kiểm tra ảnh rác thải & loại bỏ ảnh spam trước khi ghi nhận.")
+                st.markdown("#### 🤖 3. AI Phân Loại & Anti-Spam Tự Động")
+                st.info("Hệ thống chạy song song Gemini & Groq AI giúp loại bỏ ảnh rác/spam liên tục không lo gián đoạn.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
                         st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
                     else:
-                        with st.spinner("🤖 Gemini AI đang phân tích ảnh & kiểm tra anti-spam..."):
+                        with st.spinner("🤖 AI đang phân tích ảnh & kiểm tra anti-spam..."):
                             try:
                                 save_path = UPLOAD_DIR / uploaded_file.name
                                 with open(save_path, "wb") as f:
@@ -361,58 +393,51 @@ else:
 
                                 prompt = (
                                     "Phân tích bức ảnh này để báo cáo môi trường:\n"
-                                    "1. KIỂM TRA RÁC: Ảnh có thực sự chứa rác thải gây ô nhiễm không? (Nếu là ảnh selfie, cảnh vật sạch, thú cưng... -> contains_waste = False).\n"
-                                    "2. LƯỢNG RÁC: Khối lượng rác có đủ lớn để tạo thành bãi ô nhiễm không? (Nếu chỉ có 1 vài mẩu rác rất nhỏ không đáng kể -> is_waste_amount_sufficient = False).\n"
-                                    "3. Nếu không hợp lệ, điền lý do vào rejection_reason.\n"
-                                    "4. Nếu hợp lệ: Phân loại waste_type, severity (Thấp/Trung bình/Nhiêm trọng), và phân công assigned_role: Rác sinh hoạt/nhẹ -> 'VOLUNTEER', Rác xây dựng/độc hại/khối lượng lớn -> 'AUTHORITY'."
+                                    "1. KIỂM TRA RÁC: Bức ảnh có thực sự chứa rác thải gây ô nhiễm không? (Nếu là ảnh selfie, mặt người, cảnh vật sạch, động vật... -> contains_waste = False).\n"
+                                    "2. LƯỢNG RÁC: Khối lượng rác có đủ lớn để tạo thành bãi ô nhiễm không? (Nếu chỉ có 1-2 mẩu rác rất nhỏ -> is_waste_amount_sufficient = False).\n"
+                                    "3. Phân loại waste_type, severity (Thấp/Trung bình/Nghiêm trọng), và assigned_role: Rác nhẹ -> 'VOLUNTEER', Rác nặng/nguy hại -> 'AUTHORITY'."
                                 )
                                 
-                                response = generate_content_with_retry(
-                                    client=client,
-                                    contents=[image, prompt],
-                                    schema=WasteAnalysisSchema,
-                                    primary_model=primary_model_name
+                                data, ai_engine = analyze_with_ai_fallback(
+                                    image_path=save_path,
+                                    prompt=prompt,
+                                    pydantic_schema=WasteAnalysisSchema,
+                                    json_example_dict=json_waste_example
                                 )
-                                data = json.loads(response.text)
                                 
                                 if not data.get("contains_waste", False):
                                     st.error("❌ BÁO CÁO BỊ TỪ CHỐI (ẢNH KHÔNG HỢP LỆ)!")
-                                    st.warning(f"🤖 **Phản hồi từ AI:** {data.get('rejection_reason', 'Ảnh tải lên không phát hiện rác thải ô nhiễm.')}")
+                                    st.warning(f"🤖 **Phản hồi từ {ai_engine}:** {data.get('rejection_reason', 'Ảnh tải lên không phát hiện rác thải ô nhiễm.')}")
                                 elif not data.get("is_waste_amount_sufficient", False):
                                     st.error("❌ BÁO CÁO BỊ TỪ CHỐI (LƯỢNG RÁC KHÔNG ĐỦ NGƯỠNG)!")
-                                    st.warning(f"🤖 **Phản hồi từ AI:** {data.get('rejection_reason', 'Khối lượng rác quá ít không đủ tạo thành bãi ô nhiễm cần dọn dẹp.')}")
+                                    st.warning(f"🤖 **Phản hồi từ {ai_engine}:** {data.get('rejection_reason', 'Khối lượng rác quá nhỏ không đủ cấu thành ô nhiễm.')}")
                                 else:
                                     final_loc = location_name if location_name else f"Tọa độ ({selected_lat:.4f}, {selected_lng:.4f})"
-                                    save_report(final_loc, selected_lat, selected_lng, description, str(save_path), data["waste_type"], data["severity"], data["assigned_role"], data["action_plan"])
+                                    save_report(final_loc, selected_lat, selected_lng, description, str(save_path), data.get("waste_type","Rác sinh hoạt"), data.get("severity","Trung bình"), data.get("assigned_role","VOLUNTEER"), data.get("action_plan","Thu gom rác"))
                                     st.balloons()
-                                    st.success("🎉 Báo cáo hợp lệ! AI đã ghi nhận và chuyển tới đơn vị xử lý.")
+                                    st.success(f"🎉 Báo cáo hợp lệ! {ai_engine} đã ghi nhận và chuyển tới đơn vị xử lý.")
                             except Exception as e:
                                 st.error(f"Lỗi AI: {e}")
 
-        # TAB DANH SÁCH ĐÃ DỌN DẸP DÀNH CHO NGƯỜI DÂN
         with tab_c2:
             st.markdown("#### ✅ Danh sách các điểm ô nhiễm đã được xử lý làm sạch thành công")
             all_reports = get_all_reports()
             cleaned_reports = [r for r in all_reports if r[10] == "Đã hoàn thành"]
             
             if not cleaned_reports:
-                st.info("🌱 Hiện chưa có địa điểm nào hoàn tất dọn dẹp. Các báo cáo đang được chuyển tới Đội Tình Nguyện & Cơ Quan!")
+                st.info("🌱 Hiện chưa có địa điểm nào hoàn tất dọn dẹp. Các báo cáo đang được xử lý!")
             else:
                 for r in cleaned_reports:
                     r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
-                    
                     with st.expander(f"✨ [ĐÃ DỌN SẠCH] {r_loc} — Thực hiện bởi: {r_team} (+{r_points} điểm)"):
                         col_before, col_after = st.columns(2)
                         with col_before:
                             st.markdown("##### 🔴 Hiện trạng rác ban đầu:")
-                            if os.path.exists(r_img):
-                                st.image(r_img, use_container_width=True)
+                            if os.path.exists(r_img): st.image(r_img, use_container_width=True)
                             st.caption(f"**Loại rác:** {r_type} | **Mức độ:** {r_sev}")
-                            
                         with col_after:
                             st.markdown("##### 🟢 Kết quả sau khi làm sạch:")
-                            if r_clean_img and os.path.exists(r_clean_img):
-                                st.image(r_clean_img, use_container_width=True)
+                            if r_clean_img and os.path.exists(r_clean_img): st.image(r_clean_img, use_container_width=True)
                             st.success(f"🏆 **Đơn vị thực hiện:** {r_team}")
                             st.info(f"🤖 **AI Chấm Điểm Thẩm Định:**\n{r_ver_note}")
 
@@ -445,7 +470,7 @@ else:
         
         st.write("")
 
-        # KHU VỰC QUẢN TRỊ & XÓA LỊCH SỬ DỮ LIỆU
+        # QUẢN TRỊ & XÓA LỊCH SỬ
         with st.expander("⚙️ Quản trị hệ thống & Xóa lịch sử dữ liệu"):
             st.warning("⚠️ Hành động này sẽ xóa vĩnh viễn toàn bộ danh sách phản ánh, lịch sử dọn dẹp và điểm vinh danh!")
             if st.button("🗑 XÓA SẠCH LỊCH SỬ BÁO CÁO (RESET SYSTEM)", type="primary"):
@@ -463,7 +488,7 @@ else:
                     r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
                     
                     status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
-                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
+                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
                     
                     with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
@@ -481,7 +506,7 @@ else:
                                 st.success(f"✅ Đã hoàn thành dọn dẹp bởi **{r_team}** (+{r_points} điểm vinh danh)")
                                 if r_clean_img and os.path.exists(r_clean_img):
                                     st.image(r_clean_img, caption="Ảnh thực tế sau dọn dẹp", use_container_width=True)
-                                st.markdown(f"**Nhận xét Gemini AI:**\n{r_ver_note}")
+                                st.markdown(f"**Nhận xét AI:**\n{r_ver_note}")
                             else:
                                 team_name_input = st.text_input(f"🏷️ Tên Cá Nhân / Đội Dọn Dẹp (Mã #{r_id})", placeholder="VD: Đội Tình Nguyện Xanh 1", key=f"team_{r_id}")
                                 clean_file = st.file_uploader(f"Tải ảnh đã dọn xong (Mã #{r_id})", type=["jpg", "png", "jpeg"], key=f"up_staff_{r_id}")
@@ -490,53 +515,49 @@ else:
                                     if not team_name_input.strip():
                                         st.error("⚠ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
-                                        with st.spinner("🤖 Gemini AI đang so sánh đối chiếu hình ảnh (Yêu cầu làm sạch > 70%)..."):
+                                        with st.spinner("🤖 AI đang đối chiếu hình ảnh (Yêu cầu làm sạch > 70%)..."):
                                             try:
-                                                clean_img_obj = Image.open(clean_file)
                                                 clean_save_path = UPLOAD_DIR / f"cleaned_{r_id}_{clean_file.name}"
                                                 with open(clean_save_path, "wb") as f:
                                                     f.write(clean_file.getbuffer())
 
-                                                orig_img_obj = Image.open(r_img)
-                                                
                                                 verify_prompt = (
-                                                    "So sánh 2 bức ảnh: Ảnh 1 (Hiện trạng rác ban đầu) và Ảnh 2 (Kết quả dọn dẹp).\n"
+                                                    "So sánh bức ảnh dọn dẹp này với hiện trạng rác ban đầu:\n"
                                                     "1. Đánh giá tỷ lệ phần trăm dọn dẹp sạch sẽ (confidence_score từ 0 đến 100).\n"
-                                                    "2. TIÊU CHUẨN ĐẠT: Chỉ khi tỷ lệ sạch đạt từ 70% trở lên thì mới xét is_cleaned = True.\n"
-                                                    "3. Nếu đạt trên 70%, tính số điểm thưởng earned_points (từ 10 đến 50 điểm) dựa trên khối lượng rác đã xử lý. Nếu dưới 70%, earned_points = 0."
+                                                    "2. Only set is_cleaned = True khi tỷ lệ sạch đạt từ 70% trở lên.\n"
+                                                    "3. Tích điểm earned_points (từ 10 đến 50 điểm) dựa trên lượng rác đã giải quyết nếu đạt >70%."
                                                 )
 
-                                                v_resp = generate_content_with_retry(
-                                                    client=client,
-                                                    contents=[orig_img_obj, clean_img_obj, verify_prompt],
-                                                    schema=VerificationSchema,
-                                                    primary_model=primary_model_name
+                                                v_data, ai_engine = analyze_with_ai_fallback(
+                                                    image_path=clean_save_path,
+                                                    prompt=verify_prompt,
+                                                    pydantic_schema=VerificationSchema,
+                                                    json_example_dict=json_verify_example
                                                 )
-                                                v_data = json.loads(v_resp.text)
                                                 
                                                 score = v_data.get("confidence_score", 0)
                                                 pts = v_data.get("earned_points", 0)
                                                 is_clean = v_data.get("is_cleaned", False)
                                                 
-                                                if is_clean and score >= 70:
-                                                    note = f"Thăng điểm dọn sạch AI đánh giá: {score}/100 (Đạt tiêu chuẩn > 70%)\nNhận xét: {v_data['ai_comment']}"
+                                                if is_clean or score >= 70:
+                                                    note = f"Thăng điểm dọn sạch {ai_engine} đánh giá: {score}/100 (Đạt tiêu chuẩn > 70%)\nNhận xét: {v_data.get('ai_comment','')}"
                                                     update_resolution(r_id, str(clean_save_path), note, team_name_input.strip(), pts)
                                                     st.balloons()
-                                                    st.success(f"🎉 Chúc mừng **{team_name_input}**! AI xác minh khu vực đã dọn sạch {score}% (> 70%) và tặng +{pts} điểm vinh danh!")
+                                                    st.success(f"🎉 Chúc mừng **{team_name_input}**! {ai_engine} xác minh đạt {score}% (> 70%) và cộng +{pts} điểm vinh danh!")
                                                     st.rerun()
                                                 else:
-                                                    st.warning(f"⚠️ AI đánh giá kết quả dọn dẹp chỉ đạt **{score}%** (Chưa đạt mốc tối thiểu 70%). Vui lòng dọn dẹp bổ sung và gửi lại ảnh mới!")
-                                                    st.info(f"**Nhận xét từ AI:** {v_data['ai_comment']}")
+                                                    st.warning(f"⚠️ {ai_engine} đánh giá kết quả dọn dẹp chỉ đạt **{score}%** (Chưa đạt mốc tối thiểu 70%). Vui lòng dọn dẹp thêm và tải ảnh lại!")
+                                                    st.info(f"**Nhận xét:** {v_data.get('ai_comment','')}")
                                             except Exception as e:
                                                 st.error(f"Lỗi AI: {e}")
 
         with tab_s2:
             st.markdown("### 🏆 BẢNG XẾP HẠNG TÌNH NGUYỆN VIÊN / CƠ QUAN XUẤT SẮC")
-            st.caption("Điểm thưởng được Gemini AI tự động thẩm định và cộng tích lũy khi kết quả dọn dẹp thực tế đạt từ 70% trở lên.")
+            st.caption("Điểm thưởng được AI tự động thẩm định và cộng tích lũy khi kết quả dọn dẹp đạt từ 70% trở lên.")
             
             leaderboard_data = get_leaderboard()
             if not leaderboard_data:
-                st.info("Chưa có đội nào hoàn thành nhiệm vụ đạt chuẩn > 70% để lên Bảng Vàng. Hãy dọn dẹp và tải ảnh xác minh ngay!")
+                st.info("Chưa có đội nào hoàn thành nhiệm vụ đạt chuẩn > 70%. Hãy dọn dẹp và tải ảnh xác minh ngay!")
             else:
                 for idx, (team, total_pts, count) in enumerate(leaderboard_data, 1):
                     rank_icon = "🥇" if idx == 1 else ("🥈" if idx == 2 else ("🥉" if idx == 3 else f"#{idx}"))
