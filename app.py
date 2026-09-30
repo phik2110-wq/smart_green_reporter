@@ -111,7 +111,10 @@ def encode_image_to_base64(image_path):
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 def call_groq_vision_api(image_path, system_instruction, response_format_schema):
-    """Gọi Groq Vision AI bằng danh sách các model dự phòng"""
+    """
+    Gọi Groq Vision AI bằng danh sách các model dự phòng mới nhất.
+    Loại bỏ hoàn toàn các model đuôi '-preview' cũ đã bị xóa khỏi Groq Console.
+    """
     if not groq_client:
         raise Exception("Chưa cấu hình Groq API Client!")
 
@@ -124,11 +127,11 @@ def call_groq_vision_api(image_path, system_instruction, response_format_schema)
     {json.dumps(response_format_schema, ensure_ascii=False)}
     """
 
-    # Danh sách các model Vision trên Groq
+    # Danh sách các model Vision hiện có trên Groq (Ưu tiên các bản instruct ổn định)
     groq_models = [
-        "qwen-2.5-32b",
         "llama-3.2-11b-vision-instruct",
-        "llama-3.2-90b-vision-preview"
+        "llama-3.2-90b-vision-instruct",
+        "llama3-70b-8192"
     ]
     
     last_err = None
@@ -159,7 +162,7 @@ def call_groq_vision_api(image_path, system_instruction, response_format_schema)
     raise Exception(f"Tất cả các model Groq đều bị lỗi: {last_err}")
 
 def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_dict):
-    """Thử Gemini trước, nếu gặp lỗi hết quota (429) sẽ tự động gọi Groq"""
+    """Thử Gemini trước, nếu gặp lỗi hết quota (429) hoặc bận sẽ tự động gọi Groq"""
     # 1. THỬ DÙNG GEMINI
     if gemini_client:
         fallback_models = ["gemini-2.5-flash", "gemini-1.5-flash", primary_model_name]
@@ -192,7 +195,7 @@ def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_d
             res_data = call_groq_vision_api(image_path, prompt, json_example_dict)
             return res_data, "Groq AI"
         except Exception as groq_err:
-            raise Exception(f"Cả Gemini và Groq đều bị lỗi: {groq_err}")
+            raise Exception(f"Cả Gemini và Groq đều bị lỗi:\n- Groq: {groq_err}")
 
     raise Exception("Hệ thống AI hiện đang bận. Vui lòng thử lại sau ít phút!")
 
@@ -495,7 +498,7 @@ else:
                 st.success("✅ Đã xóa toàn bộ lịch sử dữ liệu thành công!")
                 st.rerun()
 
-        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Báo Cáo & AI Thẩm Định (>70%)", "🏆 Bảng Vàng Vinh Danh", "🗺️ Bản Đồ Sự Cố"])
+        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Báo Cáo & AI Thẩm Định (>70%)", "🏆 Bảng Vàng Vinh Danh", "🗺️️ Bản Đồ Sự Cố"])
         
         with tab_s1:
             if not reports:
