@@ -80,11 +80,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. XỬ LÝ KHỞI TẠO GEMINI CLIENT & CHỐNG LỖI 401
+# 2. XỬ LÝ KHỞI TẠO GEMINI CLIENT
 # =========================================================
 raw_api_key = st.secrets.get("GEMINI_API_KEY", "")
 api_key = str(raw_api_key).strip().strip('"').strip("'")
-primary_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
+# Đặt mặc định ưu tiên gemini-3.8-flash
+primary_model_name = st.secrets.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 if not api_key:
     st.error("⚠️ Chưa cấu hình GEMINI_API_KEY trong Secrets trên Streamlit Cloud!")
@@ -103,21 +104,25 @@ UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================================================
-# 3. HÀM CHỐNG LỖI AI (LỌC BỎ MODEL CŨ VÀ RETRY CHUẨN)
+# 3. HÀM GỌI GEMINI 3.8 & LOẠI BỎ MODEL LỖI 404
 # =========================================================
 def generate_content_with_retry(client, contents, schema, primary_model):
     """
-    Tự động Retry khi gặp lỗi 503/429 và Fallback sang các model thế hệ mới còn hỗ trợ.
+    Ưu tiên chạy Gemini 3.8 Flash, tự động Retry và Fallback nếu Google quá tải.
     """
-    # Danh sách model chuẩn xác hiện tại
+    # Ưu tiên GEMINI 3.8 FLASH lên đầu tiên
     fallback_models = [
         primary_model,
-        "gemini-2.5-flash",
         "gemini-3.8-flash",
-        "gemini-2.5-pro"
+        "gemini-2.5-flash",
+        "gemini-3.1-pro-preview"
     ]
-    # Lọc bỏ trùng lặp và xóa các tên model 1.5 cũ đã ngưng hỗ trợ
-    models_to_try = list(dict.fromkeys([m for m in fallback_models if m and "1.5" not in m]))
+    
+    # Danh sách các mô hình đã hết hạn/bị chặn (loại bỏ hoàn toàn để không dính lỗi 404)
+    deprecated_models = ["gemini-1.5-flash", "gemini-2.5-pro", "models/gemini-2.5-pro"]
+    
+    # Lọc bỏ trùng lặp và loại bỏ hoàn toàn các mô hình hỏng
+    models_to_try = list(dict.fromkeys([m for m in fallback_models if m and m not in deprecated_models]))
 
     last_error = None
     for model in models_to_try:
@@ -135,17 +140,17 @@ def generate_content_with_retry(client, contents, schema, primary_model):
             except Exception as e:
                 err_str = str(e)
                 last_error = e
-                # Quá tải (503) hoặc chạm giới hạn (429) -> Đợi 1.5 giây rồi thử lại
+                # Lỗi quá tải (503/429) -> Đợi 1.5 giây rồi thử lại
                 if "503" in err_str or "429" in err_str:
                     time.sleep(1.5)
                     continue
-                # Model không tồn tại (404) -> Chuyển ngay sang model tiếp theo
+                # Lỗi không tìm thấy Model (404) -> Nhảy sang model tiếp theo
                 elif "404" in err_str:
                     break
                 else:
                     raise e
                     
-    raise Exception(f"Hệ thống AI hiện đang bận. Lỗi chi tiết: {last_error}")
+    raise Exception(f"Hệ thống AI bận. Lỗi chi tiết: {last_error}")
 
 # =========================================================
 # 4. SCHEMAS PYDANTIC (ANTI-SPAM & VERIFICATION)
@@ -256,7 +261,7 @@ STAFF_PIN = "1234"
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
-        <p>Hệ Thống Phản Ánh Môi Trường & Thẩm Định AI Chống Spam</p>
+        <p>Hệ Thống Phản Ánh Môi Trường & Thẩm Định AI Chống Spam (Powered by Gemini 3.8)</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -320,7 +325,7 @@ else:
                 st.markdown("#### 📍 1. Chọn vị trí & Điền thông tin")
                 default_lat, default_lng = 10.7769, 106.7009
                 
-                # Sửa triệt để lỗi bản đồ: Sử dụng OpenStreetMap trực tiếp
+                # Bản đồ OpenStreetMap chuẩn không bị đè chữ API KEY REQUIRED
                 m = folium.Map(location=[default_lat, default_lng], zoom_start=13, tiles="OpenStreetMap")
                 
                 map_data = st_folium(m, height=270, width="100%", key="input_map")
@@ -339,14 +344,14 @@ else:
                     st.image(image, caption="Ảnh thực tế đã tải", use_container_width=True)
 
             with col2:
-                st.markdown("#### 🤖 3. AI Tự Động Phân Loại & Anti-Spam")
-                st.info("Hệ thống AI sẽ tự động kiểm tra ảnh rác thải thực tế & loại bỏ ảnh spam trước khi tiếp nhận.")
+                st.markdown("#### 🤖 3. AI Tự Động Phân Loại & Anti-Spam (Gemini 3.8)")
+                st.info("Hệ thống AI Gemini 3.8 sẽ kiểm tra ảnh rác thải thực tế & loại bỏ ảnh spam trước khi tiếp nhận.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
                         st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
                     else:
-                        with st.spinner("🤖 AI Gemini đang phân tích ảnh & kiểm tra anti-spam..."):
+                        with st.spinner("🤖 Gemini 3.8 đang phân tích ảnh & kiểm tra anti-spam..."):
                             try:
                                 save_path = UPLOAD_DIR / uploaded_file.name
                                 with open(save_path, "wb") as f:
@@ -379,7 +384,7 @@ else:
                                     final_loc = location_name if location_name else f"Tọa độ ({selected_lat:.4f}, {selected_lng:.4f})"
                                     save_report(final_loc, selected_lat, selected_lng, description, str(save_path), data["waste_type"], data["severity"], data["assigned_role"], data["action_plan"])
                                     st.balloons()
-                                    st.success("🎉 Báo cáo hợp lệ! AI đã ghi nhận và chuyển tới đơn vị xử lý.")
+                                    st.success("🎉 Báo cáo hợp lệ! Gemini 3.8 đã ghi nhận và chuyển tới đơn vị xử lý.")
                             except Exception as e:
                                 st.error(f"Lỗi AI: {e}")
 
@@ -422,7 +427,7 @@ else:
                     r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
                     
                     status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
-                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
+                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️️ Cơ Quan Chức Năng"
                     
                     with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
@@ -440,16 +445,16 @@ else:
                                 st.success(f"✅ Đã hoàn thành dọn dẹp bởi **{r_team}** (+{r_points} điểm vinh danh)")
                                 if r_clean_img and os.path.exists(r_clean_img):
                                     st.image(r_clean_img, caption="Ảnh thực tế sau dọn dẹp", use_container_width=True)
-                                st.markdown(f"**Nhận xét AI:**\n{r_ver_note}")
+                                st.markdown(f"**Nhận xét Gemini 3.8:**\n{r_ver_note}")
                             else:
                                 team_name_input = st.text_input(f"🏷️ Tên Cá Nhân / Đội Dọn Dẹp (Mã #{r_id})", placeholder="VD: Đội Tình Nguyện Xanh 1", key=f"team_{r_id}")
                                 clean_file = st.file_uploader(f"Tải ảnh đã dọn xong (Mã #{r_id})", type=["jpg", "png", "jpeg"], key=f"up_staff_{r_id}")
                                 
                                 if clean_file and st.button(f"🚀 AI Thẩm Định & Tích Điểm #{r_id}", type="primary"):
                                     if not team_name_input.strip():
-                                        st.error("⚠️️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
+                                        st.error("⚠ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
-                                        with st.spinner("🤖 AI đang so sánh đối chiếu hình ảnh (Yêu cầu làm sạch > 70%)..."):
+                                        with st.spinner("🤖 Gemini 3.8 đang so sánh đối chiếu hình ảnh (Yêu cầu làm sạch > 70%)..."):
                                             try:
                                                 clean_img_obj = Image.open(clean_file)
                                                 clean_save_path = UPLOAD_DIR / f"cleaned_{r_id}_{clean_file.name}"
@@ -491,7 +496,7 @@ else:
 
         with tab_s2:
             st.markdown("### 🏆 BẢNG XẾP HẠNG TÌNH NGUYỆN VIÊN / CƠ QUAN XUẤT SẮC")
-            st.caption("Điểm thưởng được AI tự động thẩm định và cộng tích lũy khi kết quả dọn dẹp thực tế đạt từ 70% trở lên.")
+            st.caption("Điểm thưởng được Gemini 3.8 tự động thẩm định và cộng tích lũy khi kết quả dọn dẹp thực tế đạt từ 70% trở lên.")
             
             leaderboard_data = get_leaderboard()
             if not leaderboard_data:
