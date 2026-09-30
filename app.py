@@ -10,7 +10,7 @@ from google import genai
 from pydantic import BaseModel, Field
 
 # =========================================================
-# 1. CẤU HÌNH TRANG & CSS
+# 1. CẤU HÌNH TRANG & CSS (SỬA LỖI ẨN CHỮ / GIAO DIỆN)
 # =========================================================
 st.set_page_config(
     page_title="Smart Green Reporter - Quản Lý Môi Trường",
@@ -20,19 +20,29 @@ st.set_page_config(
 
 st.markdown("""
     <style>
-    .stApp { background-color: #f4f8f5; font-family: sans-serif; }
+    /* CSS Ép màu nền sáng và khắc phục lỗi chữ bị chìm */
+    .stApp { background-color: #f4f8f5 !important; font-family: 'Segoe UI', Roboto, sans-serif; }
     [data-testid="stSidebar"] { display: none; }
     
+    /* Ép tất cả các văn bản nhãn, tiêu đề có màu tương phản rõ ràng */
+    .stApp p, .stApp label, .stApp span, .stApp div {
+        color: #1b5e20 !important;
+    }
+    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
+        color: #1b5e20 !important;
+        font-weight: 700 !important;
+    }
+
     .header-banner {
         background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 60%, #4caf50 100%);
         padding: 25px 20px;
         border-radius: 16px;
-        color: white;
+        color: white !important;
         text-align: center;
         margin-bottom: 25px;
         box-shadow: 0 6px 20px rgba(46, 125, 50, 0.18);
     }
-    .header-banner h1 { color: white !important; font-weight: 800; margin-bottom: 6px; }
+    .header-banner h1, .header-banner p { color: white !important; }
     
     .role-card {
         background: white; padding: 25px 20px; border-radius: 16px;
@@ -44,8 +54,8 @@ st.markdown("""
         text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
         border-left: 5px solid #2e7d32;
     }
-    .kpi-number { font-size: 1.8rem; font-weight: 800; color: #2e7d32; }
-    .kpi-label { font-size: 0.88rem; color: #555; font-weight: 600; }
+    .kpi-number { font-size: 1.8rem; font-weight: 800; color: #2e7d32 !important; }
+    .kpi-label { font-size: 0.88rem; color: #555 !important; font-weight: 600; }
 
     /* Fix CSS Tab */
     .stTabs [data-baseweb="tab-list"] { gap: 12px !important; background-color: transparent !important; }
@@ -70,22 +80,34 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-api_key = st.secrets.get("GEMINI_API_KEY")
+# =========================================================
+# 2. KHẮC PHỤC TRIỆT ĐỂ LỖI 401 UNAUTHENTICATED
+# =========================================================
+raw_api_key = st.secrets.get("GEMINI_API_KEY", "")
+api_key = raw_api_key.strip() if isinstance(raw_api_key, str) else ""
 model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 if not api_key:
-    st.error("⚠️ Chưa cấu hình GEMINI_API_KEY trong Secrets trên Streamlit Cloud!")
+    st.error("⚠️ Chưa cấu hình GEMINI_API_KEY hợp lệ trong Secrets trên Streamlit Cloud!")
     st.stop()
 
+# Ép biến môi trường hệ thống cho SDK
+os.environ["GEMINI_API_KEY"] = api_key
 client = genai.Client(api_key=api_key)
+
 UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# Pydantic Schemas
+# =========================================================
+# 3. SCHEMAS PYDANTIC (BỔ SUNG CHỐNG SPAM)
+# =========================================================
 class WasteAnalysisSchema(BaseModel):
-    waste_type: str = Field(description="Các loại rác phát hiện trong hình")
+    contains_waste: bool = Field(description="True nếu ảnh có chứa rác thải thực sự, False nếu là ảnh không liên quan (chân dung, phong cảnh sạch, thú cưng, ảnh rác linh tinh không đúng)...")
+    is_waste_amount_sufficient: bool = Field(description="True nếu khối lượng rác đủ nhiều để cấu thành ô nhiễm môi trường thực sự, False nếu chỉ là 1-2 mẩu rác nhỏ lẻ không đáng kể.")
+    rejection_reason: str = Field(description="Lý do từ chối chi tiết bằng tiếng Việt nếu contains_waste=False hoặc is_waste_amount_sufficient=False. Điền '' nếu hợp lệ.")
+    waste_type: str = Field(description="Các loại rác phát hiện trong hình (nếu hợp lệ)")
     severity: str = Field(description="Mức độ ô nhiễm: Thấp, Trung bình, hoặc Nghiêm trọng")
-    assigned_role: str = Field(description="Chỉ điền 'VOLUNTEER' hoặc 'AUTHORITY'")
+    assigned_role: str = Field(description="Chỉ điền 'VOLUNTEER' (rác nhẹ) hoặc 'AUTHORITY' (rác nặng/nguy hại)")
     action_plan: str = Field(description="Phương án xử lý chi tiết")
 
 class VerificationSchema(BaseModel):
@@ -95,7 +117,7 @@ class VerificationSchema(BaseModel):
     earned_points: int = Field(description="Điểm cộng vinh danh (từ 10 đến 50 điểm) nếu đạt tiêu chuẩn trên 70%, điền 0 nếu dưới 70%")
 
 # =========================================================
-# 2. CƠ SỞ DỮ LIỆU SQLITE
+# 4. CƠ SỞ DỮ LIỆU SQLITE
 # =========================================================
 DB_FILE = "reports.db"
 
@@ -176,7 +198,7 @@ def get_leaderboard():
     return rows
 
 # =========================================================
-# 3. QUẢN LÝ SESSION
+# 5. GIAO DIỆN CHÍNH
 # =========================================================
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
@@ -186,7 +208,7 @@ STAFF_PIN = "1234"
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 SMART GREEN REPORTER</h1>
-        <p>Hệ Thống Báo Cáo Môi Trường & Vinh Danh Tình Nguyện Viên AI</p>
+        <p>Hệ Thống Báo Cáo Môi Trường & Thẩm Định AI Chống Spam</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -266,31 +288,46 @@ else:
                     st.image(image, caption="Ảnh thực tế đã tải", use_container_width=True)
 
             with col2:
-                st.markdown("#### 🤖 3. AI Tự Động Phân Loại")
-                st.info("Hệ thống AI sẽ tự động phân tích hình ảnh và chuyển tới đơn vị xử lý.")
+                st.markdown("#### 🤖 3. AI Tự Động Phân Loại & Kiểm Định Anti-Spam")
+                st.info("Hệ thống AI sẽ tự động kiểm tra xem bức ảnh có chứa rác thải thực tế hay không trước khi tiếp nhận.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
-                        st.error("⚠️ Vui lòng tải ảnh thực tế!")
+                        st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
                     else:
-                        with st.spinner("🤖 AI Gemini đang phân tích..."):
+                        with st.spinner("🤖 AI Gemini đang quét ảnh để kiểm tra rác thải & chống spam..."):
                             try:
                                 save_path = UPLOAD_DIR / uploaded_file.name
                                 with open(save_path, "wb") as f:
                                     f.write(uploaded_file.getbuffer())
 
-                                prompt = "Phân tích ảnh rác thải này: 1. Rác nhẹ, đồ nhựa -> assigned_role='VOLUNTEER'. 2. Rác nguy hại, lớn -> assigned_role='AUTHORITY'."
+                                prompt = (
+                                    "Kiểm tra kỹ bức ảnh này:\n"
+                                    "1. XÁC NHẬN RÁC THẢI: Ảnh này có chứa rác thải thực sự không? (Nếu là ảnh selfie, cảnh vật sạch sẽ, thú cưng, đồ vật bình thường... -> contains_waste = False).\n"
+                                    "2. KHỐI LƯỢNG RÁC: Lượng rác có đủ cấu thành bãi ô nhiễm môi trường cần dọn dẹp không? (Nếu chỉ là 1 mẩu rác bé tí ti không đáng kể -> is_waste_amount_sufficient = False).\n"
+                                    "3. Nếu không hợp lệ, nêu rõ lý do trong rejection_reason.\n"
+                                    "4. Nếu hợp lệ: Phân loại rác (waste_type), mức độ (severity) và gán đơn vị xử lý: Rác nhẹ/nhựa -> assigned_role='VOLUNTEER', Rác lớn/nguy hiểm -> assigned_role='AUTHORITY'."
+                                )
                                 response = client.models.generate_content(
                                     model=model_name, contents=[image, prompt],
                                     config={"response_mime_type": "application/json", "response_schema": WasteAnalysisSchema}
                                 )
                                 data = json.loads(response.text)
-                                final_loc = location_name if location_name else f"Tọa độ ({selected_lat:.4f}, {selected_lng:.4f})"
-                                save_report(final_loc, selected_lat, selected_lng, description, str(save_path), data["waste_type"], data["severity"], data["assigned_role"], data["action_plan"])
-                                st.balloons()
-                                st.success("🎉 Gửi phản ánh thành công!")
+                                
+                                # KIỂM TRA ĐIỀU KIỆN CHỐNG SPAM
+                                if not data.get("contains_waste", False):
+                                    st.error("❌ BÁO CÁO BỊ TỪ CHỐI (ẢNH KHÔNG HỢP LỆ)!")
+                                    st.warning(f"🤖 **Lý do từ AI:** {data.get('rejection_reason', 'Ảnh tải lên không phát hiện rác thải ô nhiễm thực sự.')}")
+                                elif not data.get("is_waste_amount_sufficient", False):
+                                    st.error("❌ BÁO CÁO BỊ TỪ CHỐI (LƯỢNG RÁC KHÔNG ĐỦ NGƯỠNG)!")
+                                    st.warning(f"🤖 **Lý do từ AI:** {data.get('rejection_reason', 'Khối lượng rác quá ít không cấu thành điểm ô nhiễm cần xử lý.')}")
+                                else:
+                                    final_loc = location_name if location_name else f"Tọa độ ({selected_lat:.4f}, {selected_lng:.4f})"
+                                    save_report(final_loc, selected_lat, selected_lng, description, str(save_path), data["waste_type"], data["severity"], data["assigned_role"], data["action_plan"])
+                                    st.balloons()
+                                    st.success("🎉 Báo cáo hợp lệ! AI đã ghi nhận và chuyển tới đơn vị xử lý.")
                             except Exception as e:
-                                st.error(f"Lỗi: {e}")
+                                st.error(f"Lỗi AI: {e}")
 
         with tab_c2:
             st.markdown("#### 🗺️ Bản đồ các điểm ô nhiễm cộng đồng")
@@ -319,7 +356,7 @@ else:
         
         st.write("")
 
-        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Báo Cáo & AI Kiểm Chứng", "🏆 Bảng Vàng Vinh Danh", "🗺️ Bản Đồ Sự Cố"])
+        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Báo Cáo & AI Kiểm Chứng (>70%)", "🏆 Bảng Vàng Vinh Danh", "🗺️ Bản Đồ Sự Cố"])
         
         # TAB 1: DANH SÁCH & AI CHECK
         with tab_s1:
@@ -332,7 +369,7 @@ else:
                     status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
                     role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
                     
-                    with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — (Đơn vị: {role_label})"):
+                    with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
                         
                         with c1:
