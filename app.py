@@ -21,7 +21,6 @@ st.set_page_config(
 
 st.markdown("""
     <style>
-    /* Nền sáng và chữ màu tối tương phản rõ ràng */
     .stApp { background-color: #f4f8f5 !important; font-family: 'Segoe UI', Roboto, sans-serif; }
     [data-testid="stSidebar"] { display: none; }
     
@@ -57,7 +56,6 @@ st.markdown("""
     .kpi-number { font-size: 1.8rem; font-weight: 800; color: #2e7d32 !important; }
     .kpi-label { font-size: 0.88rem; color: #555 !important; font-weight: 600; }
 
-    /* Định dạng Tab mượt mà */
     .stTabs [data-baseweb="tab-list"] { gap: 12px !important; background-color: transparent !important; }
     .stTabs [data-baseweb="tab"] {
         height: auto !important; background-color: #ffffff !important;
@@ -84,14 +82,12 @@ st.markdown("""
 # =========================================================
 raw_api_key = st.secrets.get("GEMINI_API_KEY", "")
 api_key = str(raw_api_key).strip().strip('"').strip("'")
-# Đặt mặc định ưu tiên gemini-3.8-flash
 primary_model_name = st.secrets.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 if not api_key:
     st.error("⚠️ Chưa cấu hình GEMINI_API_KEY trong Secrets trên Streamlit Cloud!")
     st.stop()
 
-# Đặt biến môi trường hệ thống cho SDK google-genai
 os.environ["GEMINI_API_KEY"] = api_key
 
 try:
@@ -107,26 +103,18 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # 3. HÀM GỌI GEMINI 3.8 & LOẠI BỎ MODEL LỖI 404
 # =========================================================
 def generate_content_with_retry(client, contents, schema, primary_model):
-    """
-    Ưu tiên chạy Gemini 3.8 Flash, tự động Retry và Fallback nếu Google quá tải.
-    """
-    # Ưu tiên GEMINI 3.8 FLASH lên đầu tiên
     fallback_models = [
         primary_model,
         "gemini-3.8-flash",
         "gemini-2.5-flash",
         "gemini-3.1-pro-preview"
     ]
-    
-    # Danh sách các mô hình đã hết hạn/bị chặn (loại bỏ hoàn toàn để không dính lỗi 404)
     deprecated_models = ["gemini-1.5-flash", "gemini-2.5-pro", "models/gemini-2.5-pro"]
-    
-    # Lọc bỏ trùng lặp và loại bỏ hoàn toàn các mô hình hỏng
     models_to_try = list(dict.fromkeys([m for m in fallback_models if m and m not in deprecated_models]))
 
     last_error = None
     for model in models_to_try:
-        for attempt in range(2): # Thử lại tối đa 2 lần cho mỗi model
+        for attempt in range(2):
             try:
                 response = client.models.generate_content(
                     model=model,
@@ -140,11 +128,9 @@ def generate_content_with_retry(client, contents, schema, primary_model):
             except Exception as e:
                 err_str = str(e)
                 last_error = e
-                # Lỗi quá tải (503/429) -> Đợi 1.5 giây rồi thử lại
                 if "503" in err_str or "429" in err_str:
                     time.sleep(1.5)
                     continue
-                # Lỗi không tìm thấy Model (404) -> Nhảy sang model tiếp theo
                 elif "404" in err_str:
                     break
                 else:
@@ -250,6 +236,14 @@ def get_leaderboard():
     conn.close()
     return rows
 
+def clear_all_history():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM reports")
+    c.execute("DELETE FROM sqlite_sequence WHERE name='reports'")
+    conn.commit()
+    conn.close()
+
 # =========================================================
 # 6. GIAO DIỆN ĐIỀU HÀNH CHÍNH
 # =========================================================
@@ -277,7 +271,7 @@ if st.session_state.user_role is None:
         <div class="role-card">
             <div style="font-size:3rem; margin-bottom:10px;">👤</div>
             <h3 style="color: #2e7d32;">NGƯỜI DÂN PHẢN ÁNH</h3>
-            <p style="color: #666; font-size: 0.92rem;">Gửi báo cáo rác thải kèm hình ảnh & ghim vị trí bản đồ.</p>
+            <p style="color: #666; font-size: 0.92rem;">Gửi báo cáo rác thải, xem danh sách điểm đã dọn dẹp & bản đồ.</p>
         </div>
         """, unsafe_allow_html=True)
         st.write("")
@@ -317,7 +311,7 @@ else:
     # GIAO DIỆN NGƯỜI DÂN
     # =========================================================
     if st.session_state.user_role == "CITIZEN":
-        tab_c1, tab_c2 = st.tabs(["📝 Gửi Báo Cáo Phản Ánh", "🗺️ Bản Đồ Môi Trường Cộng Đồng"])
+        tab_c1, tab_c2, tab_c3 = st.tabs(["📝 Gửi Báo Cáo Phản Ánh", "✅ Danh Sách Đã Dọn Dẹp", "🗺️ Bản Đồ Môi Trường"])
         
         with tab_c1:
             col1, col2 = st.columns([1, 1], gap="large")
@@ -325,7 +319,6 @@ else:
                 st.markdown("#### 📍 1. Chọn vị trí & Điền thông tin")
                 default_lat, default_lng = 10.7769, 106.7009
                 
-                # Bản đồ OpenStreetMap chuẩn không bị đè chữ API KEY REQUIRED
                 m = folium.Map(location=[default_lat, default_lng], zoom_start=13, tiles="OpenStreetMap")
                 
                 map_data = st_folium(m, height=270, width="100%", key="input_map")
@@ -373,7 +366,6 @@ else:
                                 )
                                 data = json.loads(response.text)
                                 
-                                # ANTI-SPAM
                                 if not data.get("contains_waste", False):
                                     st.error("❌ BÁO CÁO BỊ TỪ CHỐI (ẢNH KHÔNG HỢP LỆ)!")
                                     st.warning(f"🤖 **Phản hồi từ AI:** {data.get('rejection_reason', 'Ảnh tải lên không phát hiện rác thải ô nhiễm.')}")
@@ -388,7 +380,34 @@ else:
                             except Exception as e:
                                 st.error(f"Lỗi AI: {e}")
 
+        # TAB DANH SÁCH ĐÃ DỌN DẸP DÀNH CHO NGƯỜI DÂN
         with tab_c2:
+            st.markdown("#### ✅ Danh sách các điểm ô nhiễm đã được xử lý làm sạch thành công")
+            all_reports = get_all_reports()
+            cleaned_reports = [r for r in all_reports if r[10] == "Đã hoàn thành"]
+            
+            if not cleaned_reports:
+                st.info("🌱 Hiện chưa có địa điểm nào hoàn tất dọn dẹp. Các báo cáo đang được chuyển tới Đội Tình Nguyện & Cơ Quan!")
+            else:
+                for r in cleaned_reports:
+                    r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
+                    
+                    with st.expander(f"✨ [ĐÃ DỌN SẠCH] {r_loc} — Thực hiện bởi: {r_team} (+{r_points} điểm)"):
+                        col_before, col_after = st.columns(2)
+                        with col_before:
+                            st.markdown("##### 🔴 Hiện trạng rác ban đầu:")
+                            if os.path.exists(r_img):
+                                st.image(r_img, use_container_width=True)
+                            st.caption(f"**Loại rác:** {r_type} | **Mức độ:** {r_sev}")
+                            
+                        with col_after:
+                            st.markdown("##### 🟢 Kết quả sau khi làm sạch:")
+                            if r_clean_img and os.path.exists(r_clean_img):
+                                st.image(r_clean_img, use_container_width=True)
+                            st.success(f"🏆 **Đơn vị thực hiện:** {r_team}")
+                            st.info(f"🤖 **AI Chấm Điểm Thẩm Định:**\n{r_ver_note}")
+
+        with tab_c3:
             st.markdown("#### 🗺️ Bản đồ các điểm ô nhiễm cộng đồng")
             reports = get_all_reports()
             if reports:
@@ -417,6 +436,14 @@ else:
         
         st.write("")
 
+        # KHU VỰC QUẢN TRỊ & XÓA LỊCH SỬ DỮ LIỆU
+        with st.expander("⚙️ Quản trị hệ thống & Xóa lịch sử dữ liệu"):
+            st.warning("⚠️ Hành động này sẽ xóa vĩnh viễn toàn bộ danh sách phản ánh, lịch sử dọn dẹp và điểm vinh danh!")
+            if st.button("🗑️️ XÓA SẠCH LỊCH SỬ BÁO CÁO (RESET SYSTEM)", type="primary"):
+                clear_all_history()
+                st.success("✅ Đã xóa toàn bộ lịch sử dữ liệu thành công!")
+                st.rerun()
+
         tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Báo Cáo & AI Thẩm Định (>70%)", "🏆 Bảng Vàng Vinh Danh", "🗺️ Bản Đồ Sự Cố"])
         
         with tab_s1:
@@ -427,7 +454,7 @@ else:
                     r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
                     
                     status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
-                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️️ Cơ Quan Chức Năng"
+                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
                     
                     with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
