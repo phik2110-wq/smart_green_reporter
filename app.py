@@ -76,7 +76,7 @@ st.markdown("""
 # =========================================================
 raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
-openrouter_key = st.secrets.get("OPENROUTER_API_KEY", "")
+openrouter_key = st.secrets.get("OPENROUTER_API_KEY", "").strip().strip('"').strip("'")
 primary_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 gemini_client = None
@@ -84,38 +84,45 @@ if gemini_key:
     try:
         gemini_client = genai.Client(api_key=gemini_key)
     except Exception as e:
-        st.warning(f"⚠️️ Không thể khởi tạo Gemini Client: {e}")
+        st.warning(f"⚠ Không thể khởi tạo Gemini Client: {e}")
 
 UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================================================
-# 3. HÀM AI DỰ PHÒNG MIỄN PHÍ 100% (OPENROUTER FREE)
+# 3. HÀM AI DỰ PHÒNG ĐA DẠNG MODEL MIỄN PHÍ (OPENROUTER)
 # =========================================================
 def encode_image_to_base64(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 def call_openrouter_free_vision_api(image_path, system_instruction, response_format_schema):
+    if not openrouter_key:
+        raise Exception("Chưa cấu hình OPENROUTER_API_KEY trong Streamlit Secrets!")
+
     base64_image = encode_image_to_base64(image_path)
     prompt = f"""
     {system_instruction}
     
-    BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THEO ĐÚNG CẤU TRÚC SAU (KHÔNG DÙNG MARKDOWN):
+    BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THUẦN TÚY (KHÔNG DÙNG MARKDOWN, KHÔNG CÓ CODEBLOCK ```json) THEO CẤU TRÚC SAU:
     {json.dumps(response_format_schema, ensure_ascii=False)}
     """
 
-    headers = {"Content-Type": "application/json"}
-    if openrouter_key:
-        headers["Authorization"] = f"Bearer {openrouter_key}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {openrouter_key}"
+    }
 
-    free_models = [
+    # Danh sách nhiều model AI Vision miễn phí khác nhau để quay vòng dự phòng
+    free_vision_models = [
         "google/gemini-2.0-flash-lite-001:free",
         "meta-llama/llama-3.2-11b-vision-instruct:free",
-        "qwen/qwen-2-vl-7b-instruct:free"
+        "qwen/qwen-2-vl-7b-instruct:free",
+        "mistralai/pixtral-12b:free",
+        "google/gemma-3-27b-it:free"
     ]
 
-    for model in free_models:
+    for model in free_vision_models:
         payload = {
             "model": model,
             "messages": [
@@ -127,22 +134,22 @@ def call_openrouter_free_vision_api(image_path, system_instruction, response_for
                     ]
                 }
             ],
-            "response_format": {"type": "json_object"},
             "temperature": 0.1
         }
         try:
-            res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25)
+            res = requests.post("[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)", headers=headers, json=payload, timeout=30)
             if res.status_code == 200:
                 res_json = res.json()
                 content = res_json['choices'][0]['message']['content']
                 clean_content = content.replace("```json", "").replace("```", "").strip()
-                return json.loads(clean_content)
+                return json.loads(clean_content), f"OpenRouter ({model})"
         except Exception:
             continue
 
-    raise Exception("Không thể kết nối dịch vụ AI dự phòng miễn phí.")
+    raise Exception("Tất cả các mô hình AI dự phòng miễn phí đều đang bận hoặc lỗi kết nối.")
 
 def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_dict):
+    # 1. Thử gọi các model Gemini trước
     if gemini_client:
         fallback_models = ["gemini-2.5-flash", "gemini-1.5-flash", primary_model_name]
         models_to_try = list(dict.fromkeys([m for m in fallback_models if m]))
@@ -158,7 +165,7 @@ def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_d
                         "response_schema": pydantic_schema
                     }
                 )
-                return json.loads(response.text), "Gemini AI"
+                return json.loads(response.text), f"Gemini ({model})"
             except Exception as e:
                 err_str = str(e).lower()
                 if any(kw in err_str for kw in ["429", "503", "quota", "resource_exhausted", "limit"]):
@@ -167,12 +174,9 @@ def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_d
                 else:
                     break
 
-    try:
-        st.toast("⚡ Gemini tạm bận. Đã tự động chuyển sang Free Vision AI...", icon="🔄")
-        res_data = call_openrouter_free_vision_api(image_path, prompt, json_example_dict)
-        return res_data, "Free Vision AI"
-    except Exception as free_err:
-        raise Exception(f"Lỗi xử lý AI: {free_err}")
+    # 2. Nếu Gemini lỗi, chuyển sang kho tàng AI Vision miễn phí qua OpenRouter
+    st.toast("⚡ Gemini tạm bận. Đang chuyển đổi sang các AI Vision miễn phí khác...", icon="🔄")
+    return call_openrouter_free_vision_api(image_path, prompt, json_example_dict)
 
 # Schemas cấu trúc JSON cho Pydantic
 class WasteAnalysisSchema(BaseModel):
@@ -293,7 +297,7 @@ STAFF_PIN = "1234"
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
-        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp AI Miễn Phí</p>
+        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp Đa AI Miễn Phí</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -369,14 +373,14 @@ else:
                     st.image(image, caption="Ảnh thực tế đã tải", use_container_width=True)
 
             with col2:
-                st.markdown("#### 🤖 3. AI Phân Loại & Anti-Spam Tự Động")
-                st.info("Hệ thống kiểm duyệt ảnh tự động và thông minh.")
+                st.markdown("#### 🤖 3. Đa AI Kiểm Duyệt & Anti-Spam Tự Động")
+                st.info("Hệ thống tích hợp nhiều mô hình AI phân tích ảnh thông minh.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
                         st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
                     else:
-                        with st.spinner("🤖 AI đang phân tích ảnh & kiểm tra anti-spam..."):
+                        with st.spinner("🤖 Đang phân tích ảnh bằng hệ thống Đa AI..."):
                             try:
                                 save_path = UPLOAD_DIR / uploaded_file.name
                                 with open(save_path, "wb") as f:
@@ -408,7 +412,7 @@ else:
                                     st.balloons()
                                     st.success(f"🎉 Báo cáo hợp lệ! {ai_engine} đã ghi nhận và chuyển tới đơn vị xử lý.")
                             except Exception as e:
-                                st.error(f"Lỗi AI: {e}")
+                                st.error(f"Lỗi hệ thống AI: {e}")
 
         with tab_c2:
             st.markdown("#### ✅ Danh sách các điểm ô nhiễm đã được xử lý làm sạch thành công")
@@ -430,7 +434,7 @@ else:
                             st.markdown("##### 🟢 Kết quả sau khi làm sạch:")
                             if r_clean_img and os.path.exists(r_clean_img): st.image(r_clean_img, use_container_width=True)
                             st.success(f"🏆 **Đơn vị thực hiện:** {r_team}")
-                            st.info(f"🤖 **AI Chấm Điểm Thẩm Định:**\n{r_ver_note}")
+                            st.info(f"🤖 **AI Thẩm Định:**\n{r_ver_note}")
 
         with tab_c3:
             st.markdown("#### 🗺️ Bản đồ các điểm ô nhiễm cộng đồng")
@@ -473,7 +477,7 @@ else:
                 for r in reports:
                     r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
                     status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
-                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
+                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️️ Cơ Quan Chức Năng"
                     
                     with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
@@ -499,7 +503,7 @@ else:
                                     if not team_name_input.strip():
                                         st.error("⚠️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
-                                        with st.spinner("🤖 AI đang đối chiếu hình ảnh..."):
+                                        with st.spinner("🤖 Đang đối chiếu ảnh bằng hệ thống Đa AI..."):
                                             try:
                                                 clean_save_path = UPLOAD_DIR / f"cleaned_{r_id}_{clean_file.name}"
                                                 with open(clean_save_path, "wb") as f:
@@ -524,7 +528,7 @@ else:
                                                 is_clean = v_data.get("is_cleaned", False)
                                                 
                                                 if is_clean or score >= 70:
-                                                    note = f"Thăng điểm dọn sạch {ai_engine} đánh giá: {score}/100\nNhận xét: {v_data.get('ai_comment','')}"
+                                                    note = f"Thăng điểm dọn sạch qua {ai_engine}: {score}/100\nNhận xét: {v_data.get('ai_comment','')}"
                                                     update_resolution(r_id, str(clean_save_path), note, team_name_input.strip(), pts)
                                                     st.balloons()
                                                     st.success(f"🎉 Chúc mừng **{team_name_input}**! {ai_engine} xác minh đạt {score}% và cộng +{pts} điểm!")
