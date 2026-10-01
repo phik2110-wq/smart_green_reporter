@@ -9,8 +9,6 @@ import streamlit as st
 from PIL import Image
 import folium
 from streamlit_folium import st_folium
-from google import genai
-from pydantic import BaseModel, Field
 
 # =========================================================
 # 1. CẤU HÌNH TRANG & CSS
@@ -72,122 +70,102 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. KHỞI TẠO API CLIENTS
+# 2. LẤY API KEYS TỪ SECRETS
 # =========================================================
 raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
 openrouter_key = st.secrets.get("OPENROUTER_API_KEY", "").strip().strip('"').strip("'")
-primary_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
-
-gemini_client = None
-if gemini_key:
-    try:
-        gemini_client = genai.Client(api_key=gemini_key)
-    except Exception as e:
-        st.warning(f"⚠ Không thể khởi tạo Gemini Client: {e}")
 
 UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# =========================================================
-# 3. HÀM AI DỰ PHÒNG ĐA DẠNG MODEL MIỄN PHÍ (OPENROUTER)
-# =========================================================
 def encode_image_to_base64(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def call_openrouter_free_vision_api(image_path, system_instruction, response_format_schema):
-    if not openrouter_key:
-        raise Exception("Chưa cấu hình OPENROUTER_API_KEY trong Streamlit Secrets!")
-
+# =========================================================
+# 3. HÀM GỌI AI THÔNG MINH QUA REST API TRỰC TIẾP
+# =========================================================
+def call_ai_vision(image_path, system_prompt, json_example_dict):
     base64_image = encode_image_to_base64(image_path)
-    prompt = f"""
-    {system_instruction}
     
-    BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THUẦN TÚY (KHÔNG DÙNG MARKDOWN, KHÔNG CÓ CODEBLOCK ```json) THEO CẤU TRÚC SAU:
-    {json.dumps(response_format_schema, ensure_ascii=False)}
+    full_prompt = f"""
+    {system_prompt}
+    
+    BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THUẦN TÚY, KHÔNG DÙNG MARKDOWN, KHÔNG CÓ ```json. CẤU TRÚC JSON CHUẨN:
+    {json.dumps(json_example_dict, ensure_ascii=False)}
     """
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {openrouter_key}"
-    }
-
-    # Danh sách nhiều model AI Vision miễn phí khác nhau để quay vòng dự phòng
-    free_vision_models = [
-        "google/gemini-2.0-flash-lite-001:free",
-        "meta-llama/llama-3.2-11b-vision-instruct:free",
-        "qwen/qwen-2-vl-7b-instruct:free",
-        "mistralai/pixtral-12b:free",
-        "google/gemma-3-27b-it:free"
-    ]
-
-    for model in free_vision_models:
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }
-            ],
-            "temperature": 0.1
-        }
-        try:
-            res = requests.post("[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)", headers=headers, json=payload, timeout=30)
-            if res.status_code == 200:
-                res_json = res.json()
-                content = res_json['choices'][0]['message']['content']
-                clean_content = content.replace("```json", "").replace("```", "").strip()
-                return json.loads(clean_content), f"OpenRouter ({model})"
-        except Exception:
-            continue
-
-    raise Exception("Tất cả các mô hình AI dự phòng miễn phí đều đang bận hoặc lỗi kết nối.")
-
-def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_dict):
-    # 1. Thử gọi các model Gemini trước
-    if gemini_client:
-        fallback_models = ["gemini-2.5-flash", "gemini-1.5-flash", primary_model_name]
-        models_to_try = list(dict.fromkeys([m for m in fallback_models if m]))
-        
-        pil_img = Image.open(image_path)
-        for model in models_to_try:
-            try:
-                response = gemini_client.models.generate_content(
-                    model=model,
-                    contents=[pil_img, prompt],
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": pydantic_schema
+    # 1. Thử gọi trực tiếp Google Gemini REST API trước
+    if gemini_key:
+        gemini_models = ["gemini-1.5-flash", "gemini-2.5-flash"]
+        for model in gemini_models:
+            url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={gemini_key}"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": full_prompt},
+                            {
+                                "inline_data": {
+                                    "mime_type": "image/jpeg",
+                                    "data": base64_image
+                                }
+                            }
+                        ]
                     }
-                )
-                return json.loads(response.text), f"Gemini ({model})"
-            except Exception as e:
-                err_str = str(e).lower()
-                if any(kw in err_str for kw in ["429", "503", "quota", "resource_exhausted", "limit"]):
-                    time.sleep(0.5)
-                    continue
-                else:
-                    break
+                ],
+                "generationConfig": {"temperature": 0.1}
+            }
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=25)
+                if res.status_code == 200:
+                    res_json = res.json()
+                    text_content = res_json['candidates'][0]['content']['parts'][0]['text']
+                    clean_text = text_content.replace("```json", "").replace("```", "").strip()
+                    return json.loads(clean_text), f"Gemini ({model})"
+            except Exception:
+                continue
 
-    # 2. Nếu Gemini lỗi, chuyển sang kho tàng AI Vision miễn phí qua OpenRouter
-    st.toast("⚡ Gemini tạm bận. Đang chuyển đổi sang các AI Vision miễn phí khác...", icon="🔄")
-    return call_openrouter_free_vision_api(image_path, prompt, json_example_dict)
+    # 2. Nếu Gemini lỗi, chuyển sang OpenRouter
+    if openrouter_key:
+        openrouter_models = [
+            "google/gemini-2.0-flash-lite-001:free",
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "qwen/qwen-2-vl-7b-instruct:free"
+        ]
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {openrouter_key}"
+        }
+        for model in openrouter_models:
+            payload = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": full_prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        ]
+                    }
+                ],
+                "temperature": 0.1
+            }
+            try:
+                res = requests.post("[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)", headers=headers, json=payload, timeout=25)
+                if res.status_code == 200:
+                    res_json = res.json()
+                    content = res_json['choices'][0]['message']['content']
+                    clean_content = content.replace("```json", "").replace("```", "").strip()
+                    return json.loads(clean_content), f"OpenRouter ({model})"
+            except Exception:
+                continue
 
-# Schemas cấu trúc JSON cho Pydantic
-class WasteAnalysisSchema(BaseModel):
-    contains_waste: bool = Field(description="True nếu ảnh chứa rác thải ô nhiễm")
-    is_waste_amount_sufficient: bool = Field(description="True nếu khối lượng rác đủ nhiều")
-    rejection_reason: str = Field(description="Lý do từ chối nếu không hợp lệ")
-    waste_type: str = Field(description="Loại rác phát hiện")
-    severity: str = Field(description="Mức độ: Thấp, Trung bình, hoặc Nghiêm trọng")
-    assigned_role: str = Field(description="'VOLUNTEER' (nhẹ) hoặc 'AUTHORITY' (nặng)")
-    action_plan: str = Field(description="Phương án xử lý")
+    raise Exception("Không thể kết nối đến bất kỳ dịch vụ AI nào. Vui lòng kiểm tra lại API Key trong Secrets!")
 
+# JSON mẫu cấu trúc dữ liệu
 json_waste_example = {
     "contains_waste": True,
     "is_waste_amount_sufficient": True,
@@ -195,19 +173,13 @@ json_waste_example = {
     "waste_type": "Rác nhựa, túi nilon",
     "severity": "Trung bình",
     "assigned_role": "VOLUNTEER",
-    "action_plan": "Cần thu gom túi nilon và phân loại rác tái chế"
+    "action_plan": "Thu gom và phân loại rác thải"
 }
-
-class VerificationSchema(BaseModel):
-    is_cleaned: bool = Field(description="True nếu địa điểm đã dọn sạch > 70%")
-    confidence_score: int = Field(description="Điểm % làm sạch (0-100)")
-    ai_comment: str = Field(description="Nhận xét chi tiết")
-    earned_points: int = Field(description="Điểm cộng (10-50) nếu đạt trên 70%")
 
 json_verify_example = {
     "is_cleaned": True,
     "confidence_score": 85,
-    "ai_comment": "Khu vực đã được dọn dẹp sạch rác thải nhựa ban đầu.",
+    "ai_comment": "Khu vực đã được dọn sạch rác.",
     "earned_points": 30
 }
 
@@ -297,7 +269,7 @@ STAFF_PIN = "1234"
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
-        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp Đa AI Miễn Phí</p>
+        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp Đa AI Thông Minh</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -373,14 +345,14 @@ else:
                     st.image(image, caption="Ảnh thực tế đã tải", use_container_width=True)
 
             with col2:
-                st.markdown("#### 🤖 3. Đa AI Kiểm Duyệt & Anti-Spam Tự Động")
-                st.info("Hệ thống tích hợp nhiều mô hình AI phân tích ảnh thông minh.")
+                st.markdown("#### 🤖 3. AI Kiểm Duyệt & Anti-Spam Tự Động")
+                st.info("Hệ thống kiểm duyệt ảnh tự động và thông minh.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
                         st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
                     else:
-                        with st.spinner("🤖 Đang phân tích ảnh bằng hệ thống Đa AI..."):
+                        with st.spinner("🤖 Đang phân tích ảnh bằng AI..."):
                             try:
                                 save_path = UPLOAD_DIR / uploaded_file.name
                                 with open(save_path, "wb") as f:
@@ -393,10 +365,9 @@ else:
                                     "3. Phân loại waste_type, severity (Thấp/Trung bình/Nghiêm trọng), và assigned_role: Rác nhẹ -> 'VOLUNTEER', Rác nặng/nguy hại -> 'AUTHORITY'."
                                 )
                                 
-                                data, ai_engine = analyze_with_ai_fallback(
+                                data, ai_engine = call_ai_vision(
                                     image_path=save_path,
-                                    prompt=prompt,
-                                    pydantic_schema=WasteAnalysisSchema,
+                                    system_prompt=prompt,
                                     json_example_dict=json_waste_example
                                 )
                                 
@@ -477,7 +448,7 @@ else:
                 for r in reports:
                     r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
                     status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
-                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️️ Cơ Quan Chức Năng"
+                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛 Cơ Quan Chức Năng"
                     
                     with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
@@ -503,7 +474,7 @@ else:
                                     if not team_name_input.strip():
                                         st.error("⚠️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
-                                        with st.spinner("🤖 Đang đối chiếu ảnh bằng hệ thống Đa AI..."):
+                                        with st.spinner("🤖 Đang đối chiếu ảnh bằng AI..."):
                                             try:
                                                 clean_save_path = UPLOAD_DIR / f"cleaned_{r_id}_{clean_file.name}"
                                                 with open(clean_save_path, "wb") as f:
@@ -516,10 +487,9 @@ else:
                                                     "3. Tích điểm earned_points (từ 10 đến 50 điểm) dựa trên lượng rác đã giải quyết nếu đạt >70%."
                                                 )
 
-                                                v_data, ai_engine = analyze_with_ai_fallback(
+                                                v_data, ai_engine = call_ai_vision(
                                                     image_path=clean_save_path,
-                                                    prompt=verify_prompt,
-                                                    pydantic_schema=VerificationSchema,
+                                                    system_prompt=verify_prompt,
                                                     json_example_dict=json_verify_example
                                                 )
                                                 
