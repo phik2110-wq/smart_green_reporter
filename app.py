@@ -3,13 +3,13 @@ import json
 import base64
 import time
 import sqlite3
+import requests
 from pathlib import Path
 import streamlit as st
 from PIL import Image
 import folium
 from streamlit_folium import st_folium
 from google import genai
-from groq import Groq
 from pydantic import BaseModel, Field
 
 # =========================================================
@@ -76,10 +76,7 @@ st.markdown("""
 # =========================================================
 raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
-
-raw_groq_key = st.secrets.get("GROQ_API_KEY", "")
-groq_key = str(raw_groq_key).strip().strip('"').strip("'")
-
+openrouter_key = st.secrets.get("OPENROUTER_API_KEY", "")
 primary_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 gemini_client = None
@@ -87,86 +84,68 @@ if gemini_key:
     try:
         gemini_client = genai.Client(api_key=gemini_key)
     except Exception as e:
-        st.warning(f"⚠️ Không thể khởi tạo Gemini Client: {e}")
-
-groq_client = None
-if groq_key:
-    try:
-        groq_client = Groq(api_key=groq_key)
-    except Exception as e:
-        st.warning(f"⚠️ Không thể khởi tạo Groq Client: {e}")
-
-if not gemini_client and not groq_client:
-    st.error("⚠️ Chưa cấu hình GEMINI_API_KEY hoặc GROQ_API_KEY trong Secrets trên Streamlit Cloud!")
-    st.stop()
+        st.warning(f"⚠️️ Không thể khởi tạo Gemini Client: {e}")
 
 UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================================================
-# 3. HÀM XỬ LÝ AI VỚI CƠ CHẾ FALLBACK (GEMINI -> GROQ)
+# 3. HÀM AI DỰ PHÒNG MIỄN PHÍ 100% (OPENROUTER FREE)
 # =========================================================
 def encode_image_to_base64(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def call_groq_vision_api(image_path, system_instruction, response_format_schema):
-    """
-    Gọi Groq Vision AI bằng danh sách các model dự phòng mới nhất.
-    Loại bỏ hoàn toàn các model đuôi '-preview' cũ đã bị xóa khỏi Groq Console.
-    """
-    if not groq_client:
-        raise Exception("Chưa cấu hình Groq API Client!")
-
+def call_openrouter_free_vision_api(image_path, system_instruction, response_format_schema):
     base64_image = encode_image_to_base64(image_path)
-    
     prompt = f"""
     {system_instruction}
     
-    BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THEO ĐÚNG CẤU TRÚC SAU:
+    BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THEO ĐÚNG CẤU TRÚC SAU (KHÔNG DÙNG MARKDOWN):
     {json.dumps(response_format_schema, ensure_ascii=False)}
     """
 
-    # Danh sách các model Vision hiện có trên Groq (Ưu tiên các bản instruct ổn định)
-    groq_models = [
-        "llama-3.2-11b-vision-instruct",
-        "llama-3.2-90b-vision-instruct",
-        "llama3-70b-8192"
+    headers = {"Content-Type": "application/json"}
+    if openrouter_key:
+        headers["Authorization"] = f"Bearer {openrouter_key}"
+
+    free_models = [
+        "google/gemini-2.0-flash-lite-001:free",
+        "meta-llama/llama-3.2-11b-vision-instruct:free",
+        "qwen/qwen-2-vl-7b-instruct:free"
     ]
-    
-    last_err = None
-    for model_name in groq_models:
+
+    for model in free_models:
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]
+                }
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1
+        }
         try:
-            completion = groq_client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                            }
-                        ]
-                    }
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-            )
-            return json.loads(completion.choices[0].message.content)
-        except Exception as e:
-            last_err = e
+            res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25)
+            if res.status_code == 200:
+                res_json = res.json()
+                content = res_json['choices'][0]['message']['content']
+                clean_content = content.replace("```json", "").replace("```", "").strip()
+                return json.loads(clean_content)
+        except Exception:
             continue
 
-    raise Exception(f"Tất cả các model Groq đều bị lỗi: {last_err}")
+    raise Exception("Không thể kết nối dịch vụ AI dự phòng miễn phí.")
 
 def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_dict):
-    """Thử Gemini trước, nếu gặp lỗi hết quota (429) hoặc bận sẽ tự động gọi Groq"""
-    # 1. THỬ DÙNG GEMINI
     if gemini_client:
         fallback_models = ["gemini-2.5-flash", "gemini-1.5-flash", primary_model_name]
-        models_to_try = list(dict.fromkeys([m for m in fallback_models if m and "3.8" not in m]))
+        models_to_try = list(dict.fromkeys([m for m in fallback_models if m]))
         
         pil_img = Image.open(image_path)
         for model in models_to_try:
@@ -188,16 +167,12 @@ def analyze_with_ai_fallback(image_path, prompt, pydantic_schema, json_example_d
                 else:
                     break
 
-    # 2. CHUYỂN SANG GROQ KHI GEMINI GẶP LỖI HOẶC HẾT QUOTA
-    if groq_client:
-        try:
-            st.toast("⚡ Gemini hết hạn ngạch ngày. Đã tự động chuyển sang Groq Vision AI...", icon="🔄")
-            res_data = call_groq_vision_api(image_path, prompt, json_example_dict)
-            return res_data, "Groq AI"
-        except Exception as groq_err:
-            raise Exception(f"Cả Gemini và Groq đều bị lỗi:\n- Groq: {groq_err}")
-
-    raise Exception("Hệ thống AI hiện đang bận. Vui lòng thử lại sau ít phút!")
+    try:
+        st.toast("⚡ Gemini tạm bận. Đã tự động chuyển sang Free Vision AI...", icon="🔄")
+        res_data = call_openrouter_free_vision_api(image_path, prompt, json_example_dict)
+        return res_data, "Free Vision AI"
+    except Exception as free_err:
+        raise Exception(f"Lỗi xử lý AI: {free_err}")
 
 # Schemas cấu trúc JSON cho Pydantic
 class WasteAnalysisSchema(BaseModel):
@@ -318,11 +293,10 @@ STAFF_PIN = "1234"
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
-        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp Đa AI (Gemini & Groq Fallback)</p>
+        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp AI Miễn Phí</p>
     </div>
 """, unsafe_allow_html=True)
 
-# LỰA CHỌN VAI TRÒ
 if st.session_state.user_role is None:
     st.markdown("<h3 style='text-align: center; color: #1b5e20;'>👋 CHỌN VAI TRÒ TRUY CẬP HỆ THỐNG</h3>", unsafe_allow_html=True)
     st.write("")
@@ -370,9 +344,6 @@ else:
 
     st.markdown("---")
 
-    # =========================================================
-    # GIAO DIỆN NGƯỜI DÂN
-    # =========================================================
     if st.session_state.user_role == "CITIZEN":
         tab_c1, tab_c2, tab_c3 = st.tabs(["📝 Gửi Báo Cáo Phản Ánh", "✅ Danh Sách Đã Dọn Dẹp", "🗺️ Bản Đồ Môi Trường"])
         
@@ -399,7 +370,7 @@ else:
 
             with col2:
                 st.markdown("#### 🤖 3. AI Phân Loại & Anti-Spam Tự Động")
-                st.info("Hệ thống chạy song song Gemini & Groq AI giúp loại bỏ ảnh rác/spam liên tục không lo gián đoạn.")
+                st.info("Hệ thống kiểm duyệt ảnh tự động và thông minh.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
@@ -471,12 +442,8 @@ else:
                     folium.Marker([r[2], r[3]], popup=f"<b>{r[1]}</b><br>Trạng thái: {r[10]}", icon=folium.Icon(color=color, icon="leaf")).add_to(m_all)
                 st_folium(m_all, height=450, width="100%", key="cit_map")
 
-    # =========================================================
-    # GIAO DIỆN ĐỘI TÌNH NGUYỆN & CƠ QUAN
-    # =========================================================
     elif st.session_state.user_role == "STAFF":
         reports = get_all_reports()
-        
         total_reports = len(reports)
         pending_reports = sum(1 for r in reports if r[10] != "Đã hoàn thành")
         completed_reports = sum(1 for r in reports if r[10] == "Đã hoàn thành")
@@ -490,7 +457,6 @@ else:
         
         st.write("")
 
-        # QUẢN TRỊ SYSTEM & RESET DATABASE
         with st.expander("⚙️ Quản trị hệ thống & Xóa lịch sử dữ liệu"):
             st.warning("⚠️ Hành động này sẽ xóa vĩnh viễn toàn bộ danh sách phản ánh, lịch sử dọn dẹp và điểm vinh danh!")
             if st.button("🗑 XÓA SẠCH LỊCH SỬ BÁO CÁO (RESET SYSTEM)", type="primary"):
@@ -498,7 +464,7 @@ else:
                 st.success("✅ Đã xóa toàn bộ lịch sử dữ liệu thành công!")
                 st.rerun()
 
-        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Báo Cáo & AI Thẩm Định (>70%)", "🏆 Bảng Vàng Vinh Danh", "🗺️️ Bản Đồ Sự Cố"])
+        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Báo Cáo & AI Thẩm Định (>70%)", "🏆 Bảng Vàng Vinh Danh", "🗺️ Bản Đồ Sự Cố"])
         
         with tab_s1:
             if not reports:
@@ -506,13 +472,11 @@ else:
             else:
                 for r in reports:
                     r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
-                    
                     status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
                     role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛️ Cơ Quan Chức Năng"
                     
                     with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
                         c1, c2 = st.columns([1, 1], gap="medium")
-                        
                         with c1:
                             st.markdown("##### 📸 Bằng chứng ô nhiễm ban đầu:")
                             if os.path.exists(r_img): st.image(r_img, use_container_width=True)
@@ -535,7 +499,7 @@ else:
                                     if not team_name_input.strip():
                                         st.error("⚠️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
-                                        with st.spinner("🤖 AI đang đối chiếu hình ảnh (Yêu cầu làm sạch > 70%)..."):
+                                        with st.spinner("🤖 AI đang đối chiếu hình ảnh..."):
                                             try:
                                                 clean_save_path = UPLOAD_DIR / f"cleaned_{r_id}_{clean_file.name}"
                                                 with open(clean_save_path, "wb") as f:
@@ -560,24 +524,21 @@ else:
                                                 is_clean = v_data.get("is_cleaned", False)
                                                 
                                                 if is_clean or score >= 70:
-                                                    note = f"Thăng điểm dọn sạch {ai_engine} đánh giá: {score}/100 (Đạt tiêu chuẩn > 70%)\nNhận xét: {v_data.get('ai_comment','')}"
+                                                    note = f"Thăng điểm dọn sạch {ai_engine} đánh giá: {score}/100\nNhận xét: {v_data.get('ai_comment','')}"
                                                     update_resolution(r_id, str(clean_save_path), note, team_name_input.strip(), pts)
                                                     st.balloons()
-                                                    st.success(f"🎉 Chúc mừng **{team_name_input}**! {ai_engine} xác minh đạt {score}% (> 70%) và cộng +{pts} điểm vinh danh!")
+                                                    st.success(f"🎉 Chúc mừng **{team_name_input}**! {ai_engine} xác minh đạt {score}% và cộng +{pts} điểm!")
                                                     st.rerun()
                                                 else:
-                                                    st.warning(f"⚠️ {ai_engine} đánh giá kết quả dọn dẹp chỉ đạt **{score}%** (Chưa đạt mốc tối thiểu 70%). Vui lòng dọn dẹp thêm và tải ảnh lại!")
-                                                    st.info(f"**Nhận xét:** {v_data.get('ai_comment','')}")
+                                                    st.warning(f"⚠️ {ai_engine} đánh giá kết quả chỉ đạt **{score}%** (Chưa đạt mốc 70%). Vui lòng dọn dẹp thêm!")
                                             except Exception as e:
                                                 st.error(f"Lỗi AI: {e}")
 
         with tab_s2:
             st.markdown("### 🏆 BẢNG XẾP HẠNG TÌNH NGUYỆN VIÊN / CƠ QUAN XUẤT SẮC")
-            st.caption("Điểm thưởng được AI tự động thẩm định và cộng tích lũy khi kết quả dọn dẹp đạt từ 70% trở lên.")
-            
             leaderboard_data = get_leaderboard()
             if not leaderboard_data:
-                st.info("Chưa có đội nào hoàn thành nhiệm vụ đạt chuẩn > 70%. Hãy dọn dẹp và tải ảnh xác minh ngay!")
+                st.info("Chưa có đội nào hoàn thành nhiệm vụ đạt chuẩn > 70%.")
             else:
                 for idx, (team, total_pts, count) in enumerate(leaderboard_data, 1):
                     rank_icon = "🥇" if idx == 1 else ("🥈" if idx == 2 else ("🥉" if idx == 3 else f"#{idx}"))
@@ -586,7 +547,7 @@ else:
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
                                 <h4 style="margin:0; color:#1b5e20;">{rank_icon} {team}</h4>
-                                <span style="font-size:0.88rem; color:#666;">Đã hoàn thành: <b>{count} nhiệm vụ đạt chuẩn (> 70%)</b></span>
+                                <span style="font-size:0.88rem; color:#666;">Đã hoàn thành: <b>{count} nhiệm vụ</b></span>
                             </div>
                             <div style="text-align:right;">
                                 <span style="font-size:1.4rem; font-weight:800; color:#d81b60;">+{total_pts}</span>
