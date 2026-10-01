@@ -11,7 +11,7 @@ import folium
 from streamlit_folium import st_folium
 
 # =========================================================
-# 1. CẤU HÌNH TRANG & CSS
+# 1. CẤU HÌNH TRANG & CSS GIAO DIỆN
 # =========================================================
 st.set_page_config(
     page_title="Urban GreenEye AI - Mắt Xanh Đô Thị",
@@ -84,7 +84,7 @@ def encode_image_to_base64(image_path):
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 # =========================================================
-# 3. HÀM GỌI AI THÔNG MINH QUA REST API TRỰC TIẾP
+# 3. HÀM GỌI AI THÔNG MINH QUA REST API
 # =========================================================
 def call_ai_vision(image_path, system_prompt, json_example_dict):
     base64_image = encode_image_to_base64(image_path)
@@ -96,8 +96,8 @@ def call_ai_vision(image_path, system_prompt, json_example_dict):
     {json.dumps(json_example_dict, ensure_ascii=False)}
     """
 
-    # 1. Thử gọi trực tiếp Google Gemini REST API trước
-    if gemini_key:
+    # 1. Thử gọi trực tiếp Google Gemini REST API (nếu có key hợp lệ)
+    if gemini_key and gemini_key.startswith("AIzaSy"):
         gemini_models = ["gemini-1.5-flash", "gemini-2.5-flash"]
         for model in gemini_models:
             url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={gemini_key}"
@@ -128,7 +128,7 @@ def call_ai_vision(image_path, system_prompt, json_example_dict):
             except Exception:
                 continue
 
-    # 2. Nếu Gemini lỗi, chuyển sang OpenRouter
+    # 2. Gọi OpenRouter (Hỗ trợ cấu hình header chuẩn)
     if openrouter_key:
         openrouter_models = [
             "google/gemini-2.0-flash-lite-001:free",
@@ -137,7 +137,9 @@ def call_ai_vision(image_path, system_prompt, json_example_dict):
         ]
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {openrouter_key}"
+            "Authorization": f"Bearer {openrouter_key}",
+            "HTTP-Referer": "[https://streamlit.io](https://streamlit.io)",
+            "X-Title": "Urban GreenEye AI"
         }
         for model in openrouter_models:
             payload = {
@@ -154,7 +156,7 @@ def call_ai_vision(image_path, system_prompt, json_example_dict):
                 "temperature": 0.1
             }
             try:
-                res = requests.post("[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)", headers=headers, json=payload, timeout=25)
+                res = requests.post("[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)", headers=headers, json=payload, timeout=30)
                 if res.status_code == 200:
                     res_json = res.json()
                     content = res_json['choices'][0]['message']['content']
@@ -163,7 +165,7 @@ def call_ai_vision(image_path, system_prompt, json_example_dict):
             except Exception:
                 continue
 
-    raise Exception("Không thể kết nối đến bất kỳ dịch vụ AI nào. Vui lòng kiểm tra lại API Key trong Secrets!")
+    raise Exception("Không thể kết nối đến bất kỳ dịch vụ AI nào. Vui lòng kiểm tra lại cấu hình API Key trong Secrets!")
 
 # JSON mẫu cấu trúc dữ liệu
 json_waste_example = {
