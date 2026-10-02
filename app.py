@@ -2,10 +2,10 @@ import os
 import json
 import base64
 import sqlite3
-import requests
 from pathlib import Path
 import streamlit as st
 from PIL import Image
+import google.generativeai as genai
 import folium
 from streamlit_folium import st_folium
 
@@ -69,67 +69,43 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. LẤY API KEY TỪ SECRETS
+# 2. CẤU HÌNH GOOGLE GEMINI AI (DÙNG THƯ VIỆN CHUẨN GOOGLE-GENERATIVEAI)
 # =========================================================
 raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
-gemini_model = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash").strip().strip('"').strip("'")
+gemini_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash").strip().strip('"').strip("'")
+
+if gemini_key:
+    genai.configure(api_key=gemini_key)
 
 UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-def encode_image_to_base64(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
-
 # =========================================================
-# 3. HÀM GỌI GOOGLE GEMINI AI (DUY NHẤT 1 AI) - FIX URL 1 DÒNG
+# 3. HÀM GỌI GEMINI 2.5 FLASH AN TOÀN TUYỆT ĐỐI
 # =========================================================
 def call_gemini_vision(image_path, system_prompt, json_example_dict):
     if not gemini_key:
         raise Exception("Chưa cấu hình GEMINI_API_KEY trong Streamlit Secrets!")
         
-    base64_image = encode_image_to_base64(image_path)
-    
-    full_prompt = f"""
-    {system_prompt}
-    
-    BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THUẦN TÚY, KHÔNG DÙNG MARKDOWN, KHÔNG CÓ ```json. CẤU TRÚC JSON CHUẨN:
-    {json.dumps(json_example_dict, ensure_ascii=False)}
-    """
-
-    # Đảm bảo URL nằm trên duy nhất 1 dòng liền mạch
-    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){gemini_model}:generateContent?key={gemini_key}"
-    
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": full_prompt},
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": base64_image
-                        }
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {"temperature": 0.1}
-    }
-    
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=30)
-        if res.status_code == 200:
-            res_json = res.json()
-            text_content = res_json['candidates'][0]['content']['parts'][0]['text']
-            clean_text = text_content.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_text), f"Gemini ({gemini_model})"
-        else:
-            raise Exception(f"Lỗi API Google (Mã lỗi {res.status_code}): {res.text}")
+        # Sử dụng đúng SDK chuẩn của Google
+        model = genai.GenerativeModel(gemini_model_name)
+        img = Image.open(image_path)
+        
+        full_prompt = f"""
+        {system_prompt}
+        
+        BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THUẦN TÚY, KHÔNG DÙNG MARKDOWN, KHÔNG CÓ ```json. CẤU TRÚC JSON CHUẨN:
+        {json.dumps(json_example_dict, ensure_ascii=False)}
+        """
+
+        response = model.generate_content([full_prompt, img])
+        text_content = response.text
+        clean_text = text_content.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text), f"Gemini ({gemini_model_name})"
     except Exception as e:
-        raise Exception(f"Không thể kết nối Gemini AI: {str(e)}")
+        raise Exception(f"Lỗi kết nối Gemini AI ({gemini_model_name}): {str(e)}")
 
 # JSON mẫu cấu trúc dữ liệu
 json_waste_example = {
@@ -235,7 +211,7 @@ STAFF_PIN = "1234"
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
-        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp Google Gemini AI</p>
+        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp Google Gemini 2.5 Flash</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -277,7 +253,7 @@ if st.session_state.user_role is None:
 else:
     col_nav1, col_nav2 = st.columns([3.5, 1.2])
     with col_nav1:
-        role_badge = "🟢 Giao diện Người Dân Phản Ánh" if st.session_state.user_role == "CITIZEN" else "🛡️ Dashboard Đội Tình Nguyện & Cơ Quan"
+        role_badge = "🟢 Giao diện Người Dân Phản Ánh" if st.session_state.user_role == "CITIZEN" else "🛡️️ Dashboard Đội Tình Nguyện & Cơ Quan"
         st.markdown(f"<h3 style='color: #1b5e20; margin:0;'>{role_badge}</h3>", unsafe_allow_html=True)
     with col_nav2:
         if st.button("🚪 Đổi vai trò / Đăng xuất", use_container_width=True):
@@ -311,14 +287,14 @@ else:
                     st.image(image, caption="Ảnh thực tế đã tải", use_container_width=True)
 
             with col2:
-                st.markdown("#### 🤖 3. Gemini AI Kiểm Duyệt & Anti-Spam Tự Động")
-                st.info("Hệ thống kiểm duyệt ảnh tự động bằng Gemini Vision.")
+                st.markdown("#### 🤖 3. Gemini 2.5 Flash Kiểm Duyệt & Anti-Spam")
+                st.info("Hệ thống kiểm duyệt ảnh tự động bằng Google Gemini AI.")
                 
                 if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
                     if not uploaded_file:
                         st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
                     else:
-                        with st.spinner("🤖 Gemini đang phân tích ảnh..."):
+                        with st.spinner("🤖 Gemini 2.5 Flash đang phân tích ảnh..."):
                             try:
                                 save_path = UPLOAD_DIR / uploaded_file.name
                                 with open(save_path, "wb") as f:
@@ -371,7 +347,7 @@ else:
                             st.markdown("##### 🟢 Kết quả sau khi làm sạch:")
                             if r_clean_img and os.path.exists(r_clean_img): st.image(r_clean_img, use_container_width=True)
                             st.success(f"🏆 **Đơn vị thực hiện:** {r_team}")
-                            st.info(f"🤖 **Gemini AI Thẩm Định:**\n{r_ver_note}")
+                            st.info(f"🤖 **Gemini Thẩm Định:**\n{r_ver_note}")
 
         with tab_c3:
             st.markdown("#### 🗺️ Bản đồ các điểm ô nhiễm cộng đồng")
@@ -436,7 +412,7 @@ else:
                                 team_name_input = st.text_input(f"🏷️ Tên Cá Nhân / Đội Dọn Dẹp (Mã #{r_id})", placeholder="VD: Đội Tình Nguyện Xanh 1", key=f"team_{r_id}")
                                 clean_file = st.file_uploader(f"Tải ảnh đã dọn xong (Mã #{r_id})", type=["jpg", "png", "jpeg"], key=f"up_staff_{r_id}")
                                 
-                                if clean_file and st.button(f"🚀 Gemini AI Thẩm Định & Tích Điểm #{r_id}", type="primary"):
+                                if clean_file and st.button(f"🚀 Gemini Thẩm Định & Tích Điểm #{r_id}", type="primary"):
                                     if not team_name_input.strip():
                                         st.error("⚠️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
