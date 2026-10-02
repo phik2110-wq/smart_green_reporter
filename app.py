@@ -69,11 +69,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. CẤU HÌNH GOOGLE GEMINI AI & TỐI ƯU HÓA LƯỢT GỌI
+# 2. CẤU HÌNH GOOGLE GEMINI AI (SỬ DỤNG GEMINI-2.0-FLASH)
 # =========================================================
 raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
-gemini_model_name = st.secrets.get("GEMINI_MODEL", "gemini-1.5-flash").strip().strip('"').strip("'")
+# Mặc định sử dụng gemini-2.0-flash theo yêu cầu mới nhất
+gemini_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.0-flash").strip().strip('"').strip("'")
 
 if gemini_key:
     genai.configure(api_key=gemini_key)
@@ -305,7 +306,6 @@ else:
                         st.session_state.is_processing = True
                         with st.spinner("🤖 Gemini đang phân tích ảnh cực nhanh..."):
                             try:
-                                # Nén ảnh tối ưu dung lượng trước khi lưu và gọi AI
                                 compressed_bytes = compress_image(uploaded_file)
                                 
                                 save_path = UPLOAD_DIR / uploaded_file.name
