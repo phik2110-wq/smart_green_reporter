@@ -1,7 +1,7 @@
 streamlit
 streamlit-folium
 folium
-google-genai
+google-generativeai
 groq
 pydantic
 pillow
