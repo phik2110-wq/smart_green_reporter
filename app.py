@@ -83,7 +83,7 @@ def encode_image_to_base64(image_path):
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 # =========================================================
-# 3. HÀM GỌI GOOGLE GEMINI AI (DUY NHẤT 1 AI)
+# 3. HÀM GỌI GOOGLE GEMINI AI (DUY NHẤT 1 AI) - FIX URL 1 DÒNG
 # =========================================================
 def call_gemini_vision(image_path, system_prompt, json_example_dict):
     if not gemini_key:
@@ -98,7 +98,9 @@ def call_gemini_vision(image_path, system_prompt, json_example_dict):
     {json.dumps(json_example_dict, ensure_ascii=False)}
     """
 
+    # Đảm bảo URL nằm trên duy nhất 1 dòng liền mạch
     url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){gemini_model}:generateContent?key={gemini_key}"
+    
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [
@@ -503,4 +505,3 @@ else:
                     color = "green" if r[10] == "Đã hoàn thành" else ("orange" if r[8] == "VOLUNTEER" else "red")
                     folium.Marker([r[2], r[3]], popup=f"<b>{r[1]}</b><br>Trạng thái: {r[10]}", icon=folium.Icon(color=color, icon="leaf")).add_to(m_staff)
                 st_folium(m_staff, height=450, width="100%", key="staff_map")
-
