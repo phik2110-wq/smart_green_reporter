@@ -1,6 +1,6 @@
 import os
 import json
-import base64
+import io
 import sqlite3
 from pathlib import Path
 import streamlit as st
@@ -69,11 +69,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 2. CẤU HÌNH GOOGLE GEMINI AI (DÙNG THƯ VIỆN CHUẨN GOOGLE-GENERATIVEAI)
+# 2. CẤU HÌNH GOOGLE GEMINI AI & TỐI ƯU HÓA LƯỢT GỌI
 # =========================================================
 raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
-gemini_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash").strip().strip('"').strip("'")
+gemini_model_name = st.secrets.get("GEMINI_MODEL", "gemini-1.5-flash").strip().strip('"').strip("'")
 
 if gemini_key:
     genai.configure(api_key=gemini_key)
@@ -81,33 +81,39 @@ if gemini_key:
 UPLOAD_DIR = Path("uploaded_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# =========================================================
-# 3. HÀM GỌI GEMINI 2.5 FLASH AN TOÀN TUYỆT ĐỐI
-# =========================================================
-def call_gemini_vision(image_path, system_prompt, json_example_dict):
+def compress_image(uploaded_file, max_size=800):
+    """Nén ảnh nhỏ lại để giảm dung lượng mạng và tăng tốc độ xử lý của AI"""
+    image = Image.open(uploaded_file)
+    if image.mode in ("RGBA", "P"):
+        image = image.convert("RGB")
+    image.thumbnail((max_size, max_size))
+    img_byte_arr = io.BytesIO()
+    image.save(img_byte_arr, format='JPEG', quality=80)
+    return img_byte_arr.getvalue()
+
+# Sử dụng Cache để tiết kiệm 100% lượt gọi API nếu ảnh đã từng được gửi phân tích
+@st.cache_data(show_spinner=False)
+def call_gemini_vision_cached(image_bytes, system_prompt, json_example_str):
     if not gemini_key:
         raise Exception("Chưa cấu hình GEMINI_API_KEY trong Streamlit Secrets!")
         
     try:
-        # Sử dụng đúng SDK chuẩn của Google
         model = genai.GenerativeModel(gemini_model_name)
-        img = Image.open(image_path)
+        image_part = {"mime_type": "image/jpeg", "data": image_bytes}
         
         full_prompt = f"""
         {system_prompt}
         
         BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THUẦN TÚY, KHÔNG DÙNG MARKDOWN, KHÔNG CÓ ```json. CẤU TRÚC JSON CHUẨN:
-        {json.dumps(json_example_dict, ensure_ascii=False)}
+        {json_example_str}
         """
 
-        response = model.generate_content([full_prompt, img])
-        text_content = response.text
-        clean_text = text_content.replace("```json", "").replace("```", "").strip()
+        response = model.generate_content([full_prompt, image_part])
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_text), f"Gemini ({gemini_model_name})"
     except Exception as e:
         raise Exception(f"Lỗi kết nối Gemini AI ({gemini_model_name}): {str(e)}")
 
-# JSON mẫu cấu trúc dữ liệu
 json_waste_example = {
     "contains_waste": True,
     "is_waste_amount_sufficient": True,
@@ -126,7 +132,7 @@ json_verify_example = {
 }
 
 # =========================================================
-# 4. CƠ SỞ DỮ LIỆU SQLITE
+# 3. CƠ SỞ DỮ LIỆU SQLITE
 # =========================================================
 DB_FILE = "reports.db"
 
@@ -201,17 +207,20 @@ def clear_all_history():
     conn.close()
 
 # =========================================================
-# 5. GIAO DIỆN CHÍNH
+# 4. GIAO DIỆN CHÍNH
 # =========================================================
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
+
+if "is_processing" not in st.session_state:
+    st.session_state.is_processing = False
 
 STAFF_PIN = "1234"
 
 st.markdown("""
     <div class="header-banner">
         <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
-        <p>Hệ Thống Phản Ánh Môi Trường Tích Hợp Google Gemini 2.5 Flash</p>
+        <p>Hệ Thống Phản Ánh Môi Trường Tối Ưu Hóa Tích Hợp Google Gemini AI</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -226,7 +235,7 @@ if st.session_state.user_role is None:
         <div class="role-card">
             <div style="font-size:3rem; margin-bottom:10px;">👤</div>
             <h3 style="color: #2e7d32;">NGƯỜI DÂN PHẢN ÁNH</h3>
-            <p style="color: #666; font-size: 0.92rem;">Gửi báo cáo rác thải, xem danh sách điểm đã dọn dẹp & bản đồ.</p>
+            <p style="color: #666; font-size: 0.92rem;">Gửi báo cáo rác thải, xem điểm đã dọn dẹp & bản đồ tương tác.</p>
         </div>
         """, unsafe_allow_html=True)
         st.write("")
@@ -239,7 +248,7 @@ if st.session_state.user_role is None:
         <div class="role-card">
             <div style="font-size:3rem; margin-bottom:10px;">🧹🏛️</div>
             <h3 style="color: #1b5e20;">ĐỘI TÌNH NGUYỆN & CƠ QUAN</h3>
-            <p style="color: #666; font-size: 0.92rem;">Xem danh sách, dọn dẹp, tải ảnh tích điểm vinh danh bằng Gemini AI.</p>
+            <p style="color: #666; font-size: 0.92rem;">Xử lý sự cố, thẩm định ảnh làm sạch qua AI và vinh danh.</p>
         </div>
         """, unsafe_allow_html=True)
         staff_pin = st.text_input("🔑 Mã bảo mật (PIN)", type="password", key="pin_staff", placeholder="Nhập PIN...")
@@ -253,7 +262,7 @@ if st.session_state.user_role is None:
 else:
     col_nav1, col_nav2 = st.columns([3.5, 1.2])
     with col_nav1:
-        role_badge = "🟢 Giao diện Người Dân Phản Ánh" if st.session_state.user_role == "CITIZEN" else "🛡️️ Dashboard Đội Tình Nguyện & Cơ Quan"
+        role_badge = "🟢 Giao diện Người Dân Phản Ánh" if st.session_state.user_role == "CITIZEN" else "🛡 Dashboard Đội Tình Nguyện & Cơ Quan"
         st.markdown(f"<h3 style='color: #1b5e20; margin:0;'>{role_badge}</h3>", unsafe_allow_html=True)
     with col_nav2:
         if st.button("🚪 Đổi vai trò / Đăng xuất", use_container_width=True):
@@ -283,34 +292,37 @@ else:
                 uploaded_file = st.file_uploader("📸 2. Tải ảnh thực tế điểm ô nhiễm *", type=["jpg", "jpeg", "png"])
                 
                 if uploaded_file:
-                    image = Image.open(uploaded_file)
-                    st.image(image, caption="Ảnh thực tế đã tải", use_container_width=True)
+                    st.image(uploaded_file, caption="Ảnh thực tế đã tải", use_container_width=True)
 
             with col2:
-                st.markdown("#### 🤖 3. Gemini 2.5 Flash Kiểm Duyệt & Anti-Spam")
-                st.info("Hệ thống kiểm duyệt ảnh tự động bằng Google Gemini AI.")
+                st.markdown("#### 🤖 3. Gemini Kiểm Duyệt & Anti-Spam")
+                st.info("Hệ thống tự động kiểm duyệt hình ảnh thông minh và chống báo cáo ảo.")
                 
-                if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True):
+                if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True, disabled=st.session_state.is_processing):
                     if not uploaded_file:
                         st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
                     else:
-                        with st.spinner("🤖 Gemini 2.5 Flash đang phân tích ảnh..."):
+                        st.session_state.is_processing = True
+                        with st.spinner("🤖 Gemini đang phân tích ảnh cực nhanh..."):
                             try:
+                                # Nén ảnh tối ưu dung lượng trước khi lưu và gọi AI
+                                compressed_bytes = compress_image(uploaded_file)
+                                
                                 save_path = UPLOAD_DIR / uploaded_file.name
                                 with open(save_path, "wb") as f:
-                                    f.write(uploaded_file.getbuffer())
+                                    f.write(compressed_bytes)
 
                                 prompt = (
                                     "Phân tích bức ảnh này để báo cáo môi trường:\n"
-                                    "1. KIỂM TRA RÁC: Bức ảnh có thực sự chứa rác thải gây ô nhiễm không? (Nếu là ảnh selfie, mặt người, cảnh vật sạch, động vật... -> contains_waste = False).\n"
-                                    "2. LƯỢNG RÁC: Khối lượng rác có đủ lớn để tạo thành bãi ô nhiễm không? (Nếu chỉ có 1-2 mẩu rác rất nhỏ -> is_waste_amount_sufficient = False).\n"
+                                    "1. KIỂM TRA RÁC: Bức ảnh có thực sự chứa rác thải gây ô nhiễm không? (Nếu là ảnh selfie, mặt người, cảnh vật sạch... -> contains_waste = False).\n"
+                                    "2. LƯỢNG RÁC: Khối lượng rác có đủ lớn để tạo thành bãi ô nhiễm không? (Nếu quá nhỏ -> is_waste_amount_sufficient = False).\n"
                                     "3. Phân loại waste_type, severity (Thấp/Trung bình/Nghiêm trọng), và assigned_role: Rác nhẹ -> 'VOLUNTEER', Rác nặng/nguy hại -> 'AUTHORITY'."
                                 )
                                 
-                                data, ai_engine = call_gemini_vision(
-                                    image_path=save_path,
+                                data, ai_engine = call_gemini_vision_cached(
+                                    image_bytes=compressed_bytes,
                                     system_prompt=prompt,
-                                    json_example_dict=json_waste_example
+                                    json_example_str=json.dumps(json_waste_example, ensure_ascii=False)
                                 )
                                 
                                 if not data.get("contains_waste", False):
@@ -326,6 +338,8 @@ else:
                                     st.success(f"🎉 Báo cáo hợp lệ! {ai_engine} đã ghi nhận và chuyển tới đơn vị xử lý.")
                             except Exception as e:
                                 st.error(f"Lỗi hệ thống Gemini AI: {e}")
+                            finally:
+                                st.session_state.is_processing = False
 
         with tab_c2:
             st.markdown("#### ✅ Danh sách các điểm ô nhiễm đã được xử lý làm sạch thành công")
@@ -416,11 +430,12 @@ else:
                                     if not team_name_input.strip():
                                         st.error("⚠️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
                                     else:
-                                        with st.spinner("🤖 Gemini đang đối chiếu ảnh trước và sau khi dọn..."):
+                                        with st.spinner("🤖 Gemini đang đối chiếu ảnh trước và sau..."):
                                             try:
+                                                compressed_clean_bytes = compress_image(clean_file)
                                                 clean_save_path = UPLOAD_DIR / f"cleaned_{r_id}_{clean_file.name}"
                                                 with open(clean_save_path, "wb") as f:
-                                                    f.write(clean_file.getbuffer())
+                                                    f.write(compressed_clean_bytes)
 
                                                 verify_prompt = (
                                                     "So sánh bức ảnh dọn dẹp này với hiện trạng rác ban đầu:\n"
@@ -429,10 +444,10 @@ else:
                                                     "3. Tích điểm earned_points (từ 10 đến 50 điểm) dựa trên lượng rác đã giải quyết nếu đạt >70%."
                                                 )
 
-                                                v_data, ai_engine = call_gemini_vision(
-                                                    image_path=clean_save_path,
+                                                v_data, ai_engine = call_gemini_vision_cached(
+                                                    image_bytes=compressed_clean_bytes,
                                                     system_prompt=verify_prompt,
-                                                    json_example_dict=json_verify_example
+                                                    json_example_str=json.dumps(json_verify_example, ensure_ascii=False)
                                                 )
                                                 
                                                 score = v_data.get("confidence_score", 0)
