@@ -37,12 +37,6 @@ ADMIN_PIN = str(st.secrets.get("ADMIN_PIN", os.getenv("ADMIN_PIN", "9999")))
 TEAM_PIN = str(st.secrets.get("TEAM_PIN", os.getenv("TEAM_PIN", "5555")))
 STAFF_PIN = str(st.secrets.get("STAFF_PIN", os.getenv("STAFF_PIN", "1234")))
 
-# TẠO SESSION STATE BẢO MẬT TRUY CẬP TỪNG MỤC
-if "team_authenticated" not in st.session_state:
-  st.session_state.team_authenticated = False
-if "admin_authenticated" not in st.session_state:
-  st.session_state.admin_authenticated = False
-
 # ============================================================
 # CƠ SỞ DỮ LIỆU SQLITE3
 # ============================================================
@@ -335,6 +329,13 @@ menu = st.sidebar.radio(
     ],
 )
 
+# TỰ ĐỘNG KHÓA KHI RỜI CÁC TRANG CÓ PIN
+if menu != "🧹 Đội dọn dẹp nhận nhiệm vụ":
+  st.session_state["team_auth_ok"] = False
+
+if menu != "⚙️ Reset & Cài đặt AI":
+  st.session_state["admin_auth_ok"] = False
+
 st.title("🌿 Urban GreenEye AI")
 
 # ------------------------------------------------------------
@@ -397,17 +398,17 @@ if menu == "📷 Gửi báo cáo":
     st.rerun()
 
 # ------------------------------------------------------------
-# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (YÊU CẦU MÃ PIN NGAY KHI VÀO MỤC)
+# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (BẮT CẦU NHẬP PIN MỖI LẦN TRUY CẬP)
 # ------------------------------------------------------------
 elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
   st.header("🧹 Đội dọn dẹp tiếp nhận & Báo cáo kết quả")
 
-  if not st.session_state.team_authenticated:
+  if not st.session_state.get("team_auth_ok", False):
     st.info("🔒 Mục này dành riêng cho Đội dọn dẹp. Vui lòng nhập Mã PIN để truy cập.")
     pin_input = st.text_input("🔑 Nhập Mã PIN Đội dọn dẹp (TEAM_PIN):", type="password")
     if st.button("🔓 Xác nhận truy cập"):
       if pin_input in [TEAM_PIN, ADMIN_PIN]:
-        st.session_state.team_authenticated = True
+        st.session_state["team_auth_ok"] = True
         st.success("✅ Xác thực thành công!")
         st.rerun()
       else:
@@ -415,10 +416,6 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
     st.stop()
 
   # NỘI DUNG SAU KHÍ ĐÃ NHẬP ĐÚNG PIN
-  if st.button("🔒 Đăng xuất mục này"):
-    st.session_state.team_authenticated = False
-    st.rerun()
-
   conn = get_conn()
   pending_tasks = conn.execute(
       "SELECT * FROM reports WHERE status IN ('Đã duyệt', 'Đang dọn') ORDER BY id DESC"
@@ -631,44 +628,37 @@ elif menu == "🗑️ Báo cáo Spam & Xóa":
               st.error("PIN sai!")
 
 # ------------------------------------------------------------
-# 6. RESET & CÀI ĐẶT AI (BẢO MẬT BẰNG ADMIN_PIN VỚI GIAO DIỆN CẤU HÌNH RÕ RÀNG)
+# 6. RESET & CÀI ĐẶT AI (BẮT BỘC NHẬP PIN LẠI NẾU QUAY LẠI TRANG NÀY)
 # ------------------------------------------------------------
 elif menu == "⚙️ Reset & Cài đặt AI":
   st.header("⚙️ Cấu hình Hệ thống & AI")
 
-  # XÁC THỰC MÃ PIN ADMIN NGAY KHI CHỌN NÚT TRÒN
-  if not st.session_state.admin_authenticated:
+  if not st.session_state.get("admin_auth_ok", False):
     st.warning("🔒 Khu vực này chỉ dành cho Quản trị viên (Admin). Vui lòng nhập Mã PIN ADMIN.")
     pin_admin_input = st.text_input("🔑 Nhập Mã PIN ADMIN (ADMIN_PIN):", type="password")
     if st.button("🔓 Xác nhận đăng nhập Admin"):
       if pin_admin_input == ADMIN_PIN:
-        st.session_state.admin_authenticated = True
+        st.session_state["admin_auth_ok"] = True
         st.success("✅ Xác thực thành công!")
         st.rerun()
       else:
         st.error("❌ Mã PIN ADMIN không chính xác!")
     st.stop()
 
-  # NỘI DUNG TRANG CÀI ĐẶT SAU KHÍ ĐÃ ĐĂNG NHẬP THÀNH CÔNG
+  # NỘI DUNG TRANG CÀI ĐẶT
   st.success("🔑 Bạn đang đăng nhập dưới quyền **Quản trị viên (Admin)**")
-  if st.button("🔒 Đăng xuất Admin"):
-    st.session_state.admin_authenticated = False
-    st.rerun()
-
   st.markdown("---")
 
-  # HIỂN THỊ THÔNG TIN CẤU HÌNH CLOUDFLARE AI
   st.subheader("🤖 Trạng thái kết nối Cloudflare AI")
   if cloudflare_configured():
     st.success("✅ Cloudflare AI đã kết nối thành công!")
     st.write(f"• **Account ID:** `{CF_ACCOUNT_ID[:6]}...{CF_ACCOUNT_ID[-4:] if len(CF_ACCOUNT_ID) > 10 else ''}`")
     st.write(f"• **Model:** `{CF_MODEL}`")
   else:
-    st.error("❌ Chưa kết nối Cloudflare AI. Vui lòng bổ sung `CLOUDFLARE_ACCOUNT_ID` và `CLOUDFLARE_AUTH_TOKEN` vào phần Secrets trên Streamlit Cloud.")
+    st.error("❌ Chưa kết nối Cloudflare AI. Vui lòng bổ sung `CLOUDFLARE_ACCOUNT_ID` và `CLOUDFLARE_AUTH_TOKEN` vào Secrets.")
 
   st.markdown("---")
 
-  # MỤC RESET DATABASE
   st.subheader("🔄 Reset dữ liệu & Đếm Báo cáo về 1")
   st.warning("⚠️ Hành động này sẽ xóa TOÀN BỘ báo cáo, hình ảnh và bảng xếp hạng tích điểm!")
 
