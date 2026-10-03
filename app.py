@@ -12,7 +12,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 # ============================================================
-# CẤU HÌNH HỆ THỐNG
+# CẤU HÌNH HỆ THỐNG & ĐỌC MÃ PIN TỪ SECRETS WEB
 # ============================================================
 
 st.set_page_config(
@@ -28,6 +28,7 @@ CLEANUP_DIR = "cleanup_images"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(CLEANUP_DIR, exist_ok=True)
 
+# LẤY THÔNG TIN CẤU HÌNH & MÃ PIN TỪ STREAMLIT SECRETS HOẶC ENV
 CF_ACCOUNT_ID = st.secrets.get(
     "CLOUDFLARE_ACCOUNT_ID", os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 )
@@ -35,7 +36,9 @@ CF_AUTH_TOKEN = st.secrets.get(
     "CLOUDFLARE_AUTH_TOKEN", os.getenv("CLOUDFLARE_AUTH_TOKEN", "")
 )
 CF_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct"
-STAFF_PIN = st.secrets.get("STAFF_PIN", os.getenv("STAFF_PIN", "1234"))
+
+# MÃ PIN ĐƯỢC LẤY TỪ SECRETS WEB (Mặc định 1234 nếu chưa cài)
+STAFF_PIN = str(st.secrets.get("STAFF_PIN", os.getenv("STAFF_PIN", "1234")))
 
 # ============================================================
 # CƠ SỞ DỮ LIỆU SQLITE3
@@ -325,7 +328,6 @@ def save_ai_result(report_id, analysis):
   raw_waste = str(parsed.get("contains_waste", "")).lower()
   is_waste = parsed.get("contains_waste") is True or raw_waste == "true"
 
-  # AI TỰ ĐỘNG CHUYỂN TRẠNG THÁI NGAY LẬP TỨC
   status = "Đã duyệt" if is_waste else "Spam/Từ chối"
 
   if is_waste:
@@ -381,7 +383,7 @@ menu = st.sidebar.radio(
 st.title("🌿 Urban GreenEye AI")
 
 # ------------------------------------------------------------
-# 1. GỬI BÁO CÁO (TỰ ĐỘNG TÍCH ĐIỂM NGƯỜI BÁO CÁO)
+# 1. GỬI BÁO CÁO
 # ------------------------------------------------------------
 if menu == "📷 Gửi báo cáo":
   st.header("📷 Gửi báo cáo điểm rác")
@@ -451,7 +453,7 @@ if menu == "📷 Gửi báo cáo":
     st.rerun()
 
 # ------------------------------------------------------------
-# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (ĐIỀN TÊN ĐỘI & TÍCH ĐIỂM)
+# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ
 # ------------------------------------------------------------
 elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
   st.header("🧹 Đội dọn dẹp tiếp nhận & Báo cáo kết quả")
@@ -497,7 +499,7 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
     st.subheader("3️⃣ Đội dọn dẹp đảm nhận & Hoàn tất:")
 
     team_name = st.text_input(
-        "🏷️ **Nhập Tên Đội dọn rác của bạn:**",
+        "🏷️️ **Nhập Tên Đội dọn rác của bạn:**",
         value=current_task["assigned_team"] or "Đội Môi Trường Số 1",
     )
 
@@ -549,9 +551,8 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
       conn.commit()
       conn.close()
 
-      # TÍCH ĐIỂM TỰ ĐỘNG
-      add_user_points(current_task["reporter_name"], 10)  # Người báo cáo +10đ
-      add_team_points(team_name.strip(), 20)  # Đội dọn dẹp +20đ
+      add_user_points(current_task["reporter_name"], 10)
+      add_team_points(team_name.strip(), 20)
 
       st.balloons()
       st.success(
@@ -561,7 +562,7 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
       )
       st.rerun()
 
-    # XÓA ĐƠN
+    # XÓA ĐƠN XÁC THỰC MÃ PIN TRỰC TIẾP TỪ SECRETS
     with st.popover(f"🗑️ Xóa báo cáo #{current_task['id']}"):
       pin_del_task = st.text_input("Nhập PIN:", type="password", key="pin_task")
       if st.button("Xác nhận xóa"):
@@ -665,9 +666,7 @@ elif menu == "🏆 Bảng xếp hạng tích điểm":
       st.info("Chưa có điểm tích lũy.")
     else:
       for idx, u in enumerate(top_users, 1):
-        st.write(
-            f"**#{idx}. {u['username']}** — 🌟 `{u['points']}` điểm"
-        )
+        st.write(f"**#{idx}. {u['username']}** — 🌟 `{u['points']}` điểm")
 
   with col_t:
     st.subheader("🚜 Top Đội Dọn Rác Xuất Sắc Nhất")
@@ -676,7 +675,8 @@ elif menu == "🏆 Bảng xếp hạng tích điểm":
     else:
       for idx, t in enumerate(top_teams, 1):
         st.write(
-            f"**#{idx}. {t['team_name']}** — 🏆 `{t['points']}` điểm ({t['tasks_completed']} điểm rác)"
+            f"**#{idx}. {t['team_name']}** — 🏆 `{t['points']}` điểm"
+            f" ({t['tasks_completed']} điểm rác)"
         )
 
 # ------------------------------------------------------------
@@ -731,7 +731,9 @@ elif menu == "⚙️ Reset & Cài đặt AI":
   st.header("⚙️ Cấu hình Hệ thống & AI")
 
   st.subheader("🔄 Reset đếm Báo cáo & Điểm số về 1")
-  st.warning("⚠️ Hành động này sẽ xóa TOÀN BỘ dữ liệu báo cáo, ảnh và bảng tích điểm!")
+  st.warning(
+      "⚠️ Hành động này sẽ xóa TOÀN BỘ dữ liệu báo cáo, ảnh và bảng tích điểm!"
+  )
 
   with st.popover("🚨 BẮT ĐẦU RESET HỆ THỐNG VỀ 1"):
     pin_reset = st.text_input(
