@@ -1,7 +1,3 @@
 streamlit
-streamlit-folium
-folium
-google-generativeai
-groq
-pydantic
-pillow
+requests
+Pillow
