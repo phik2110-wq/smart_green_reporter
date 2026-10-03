@@ -12,7 +12,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 # ============================================================
-# CẤU HÌNH HỆ THỐNG & ĐỌC 3 MÃ PIN TỪ SECRETS WEB
+# CẤU HÌNH HỆ THỐNG & ĐỌC MÃ PIN TỪ SECRETS WEB
 # ============================================================
 
 st.set_page_config(
@@ -28,12 +28,12 @@ CLEANUP_DIR = "cleanup_images"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(CLEANUP_DIR, exist_ok=True)
 
-# LẤY THÔNG TIN API & 3 MÃ PIN TỪ STREAMLIT SECRETS
+# LẤY THÔNG TIN API & MÃ PIN TỪ STREAMLIT SECRETS
 CF_ACCOUNT_ID = st.secrets.get("CLOUDFLARE_ACCOUNT_ID", os.getenv("CLOUDFLARE_ACCOUNT_ID", ""))
 CF_AUTH_TOKEN = st.secrets.get("CLOUDFLARE_AUTH_TOKEN", os.getenv("CLOUDFLARE_AUTH_TOKEN", ""))
 CF_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct"
 
-# ĐỌC 3 MÃ PIN KHÁC NHAU
+# CÁC MÃ PIN PHÂN QUYỀN (Nếu chưa cài trong Secrets sẽ lấy giá trị mặc định)
 ADMIN_PIN = str(st.secrets.get("ADMIN_PIN", os.getenv("ADMIN_PIN", "9999")))
 TEAM_PIN = str(st.secrets.get("TEAM_PIN", os.getenv("TEAM_PIN", "5555")))
 STAFF_PIN = str(st.secrets.get("STAFF_PIN", os.getenv("STAFF_PIN", "1234")))
@@ -314,7 +314,7 @@ def save_ai_result(report_id, analysis):
   conn.close()
 
 # ============================================================
-# GIAO DIỆN CHÍNH
+# GIAO DIỆN CHÍNH (AI CŨNG CÓ THỂ TRUY CẬP TRỰC TIẾP)
 # ============================================================
 
 st.sidebar.title("🌿 Urban GreenEye")
@@ -326,14 +326,14 @@ menu = st.sidebar.radio(
         "✅ Danh sách đã dọn",
         "🏆 Bảng xếp hạng tích điểm",
         "🗑️ Báo cáo Spam & Xóa",
-        "⚙️ Reset & Cài đặt AI",
+        "⚙️️ Reset & Cài đặt AI",
     ],
 )
 
 st.title("🌿 Urban GreenEye AI")
 
 # ------------------------------------------------------------
-# 1. GỬI BÁO CÁO
+# 1. GỬI BÁO CÁO (MỌI NGƯỜI DÙNG CÓ THỂ BÁO CÁO TỰ DO)
 # ------------------------------------------------------------
 if menu == "📷 Gửi báo cáo":
   st.header("📷 Gửi báo cáo điểm rác")
@@ -392,7 +392,7 @@ if menu == "📷 Gửi báo cáo":
     st.rerun()
 
 # ------------------------------------------------------------
-# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (DÙNG TEAM_PIN CẶP VỚI STAFF_PIN / ADMIN_PIN)
+# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (YÊU CẦU MÃ PIN KHI BÁO CÁO DỌN XONG)
 # ------------------------------------------------------------
 elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
   st.header("🧹 Đội dọn dẹp tiếp nhận & Báo cáo kết quả")
@@ -443,11 +443,16 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
     cleaned_file = st.file_uploader("Tải ảnh ĐÃ DỌN SẠCH RÁC:", type=["jpg", "jpeg", "png"])
     cleanup_note = st.text_area("Ghi chú thu gom (Khối lượng rác, xe chở...):")
 
-    input_team_pin = st.text_input("🔐 Nhập Mã PIN Đội Dọn Dẹp (TEAM_PIN):", type="password")
+    # BẮT BỘC NHẬP MÃ PIN ĐỘI DỌN DẸP Ở BƯỚC NÀY
+    input_team_pin = st.text_input("🔐 Nhập Mã PIN Xác Nhận Dọn Dẹp (TEAM_PIN):", type="password")
 
     if st.button("✅ Báo cáo dọn xong & Tích điểm", type="primary"):
+      if not input_team_pin:
+        st.warning("⚠️ Vui lòng nhập Mã PIN Xác Nhận!")
+        st.stop()
+
       if input_team_pin not in [TEAM_PIN, ADMIN_PIN]:
-        st.error("❌ Mã PIN Đội dọn dẹp không đúng!")
+        st.error("❌ Mã PIN Đội dọn dẹp không chính xác!")
         st.stop()
 
       if not cleaned_file or not team_name.strip():
@@ -478,7 +483,7 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
       st.success(f"🎉 Hoàn tất điểm rác #{current_task['id']}! Cộng +10đ cho '{current_task['reporter_name']}' và +20đ cho Đội '{team_name}'!")
       st.rerun()
 
-    # XÓA ĐƠN DÙNG STAFF_PIN HOẶC ADMIN_PIN
+    # XÓA ĐƠN YÊU CẦU STAFF_PIN HOẶC ADMIN_PIN
     with st.popover(f"🗑️ Xóa báo cáo #{current_task['id']}"):
       pin_del_task = st.text_input("Nhập PIN Nhân Viên / Admin:", type="password", key="pin_task")
       if st.button("Xác nhận xóa"):
@@ -525,7 +530,6 @@ elif menu == "✅ Danh sách đã dọn":
           st.write(f"🧹 **Đội thực hiện:** {c['assigned_team']} (+20 điểm)")
           st.write(f"📝 **Ghi chú dọn:** {c['cleanup_note'] or 'Không có'}")
 
-          # XÓA ĐƠN (XÁC THỰC STAFF_PIN HOẶC ADMIN_PIN)
           with st.popover(f"🗑️ Xóa báo cáo #{c['id']}"):
             pin_del_done = st.text_input("Mã PIN Nhân Viên / Admin:", type="password", key=f"pin_done_{c['id']}")
             if st.button("Xóa", key=f"btn_done_{c['id']}"):
@@ -549,7 +553,7 @@ elif menu == "✅ Danh sách đã dọn":
             st.error("PIN sai!")
 
 # ------------------------------------------------------------
-# 4. BẢNG XẾP HẠNG TÍCH ĐIỂM
+# 4. BẢNG XẾP HẠNG TÍCH ĐIỂM (CÔNG KHAI AI CŨNG CÓ THỂ XEM)
 # ------------------------------------------------------------
 elif menu == "🏆 Bảng xếp hạng tích điểm":
   st.header("🏆 Bảng Xếp Hạng Đóng Góp Môi Trường")
@@ -617,7 +621,7 @@ elif menu == "🗑️ Báo cáo Spam & Xóa":
               st.error("PIN sai!")
 
 # ------------------------------------------------------------
-# 6. RESET & CÀI ĐẶT AI (CHỈ DÙNG ADMIN_PIN)
+# 6. RESET & CÀI ĐẶT AI (CHỈ ADMIN MỚI ĐƯỢC RESET)
 # ------------------------------------------------------------
 elif menu == "⚙️ Reset & Cài đặt AI":
   st.header("⚙️ Cấu hình Hệ thống & AI")
