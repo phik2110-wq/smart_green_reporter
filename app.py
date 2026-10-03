@@ -1,498 +1,918 @@
 import os
-import json
-import io
 import sqlite3
-from pathlib import Path
-import streamlit as st
-from PIL import Image
-import google.generativeai as genai
-import folium
-from streamlit_folium import st_folium
+import json
+import base64
+from datetime import datetime, timedelta
+from io import BytesIO
 
-# =========================================================
-# 1. CẤU HÌNH TRANG & CSS GIAO DIỆN
-# =========================================================
+import requests
+from PIL import Image
+import streamlit as st
+
+# ============================================================
+# URBAN GREENEYE AI
+# Cloudflare Workers AI - Llama 3.2 11B Vision Instruct
+# ============================================================
+
 st.set_page_config(
-    page_title="Urban GreenEye AI - Mắt Xanh Đô Thị",
-    page_icon="🌱",
-    layout="wide"
+    page_title="Urban GreenEye AI",
+    page_icon="🌿",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+DB_FILE = "reports.db"
+UPLOAD_DIR = "uploaded_images"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+CF_ACCOUNT_ID = st.secrets.get("CLOUDFLARE_ACCOUNT_ID", os.getenv("CLOUDFLARE_ACCOUNT_ID", ""))
+CF_AUTH_TOKEN = st.secrets.get("CLOUDFLARE_AUTH_TOKEN", os.getenv("CLOUDFLARE_AUTH_TOKEN", ""))
+CF_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct"
+STAFF_PIN = st.secrets.get("STAFF_PIN", os.getenv("STAFF_PIN", "1234"))
+
+# ============================================================
+# CSS
+# ============================================================
+
 st.markdown("""
-    <style>
-    .stApp { background-color: #f4f8f5 !important; font-family: 'Segoe UI', Roboto, sans-serif; }
-    [data-testid="stSidebar"] { display: none; }
-    
-    .stApp p, .stApp label, .stApp span, .stApp div { color: #1b5e20 !important; }
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
-        color: #1b5e20 !important; font-weight: 700 !important;
-    }
-
-    .header-banner {
-        background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 60%, #4caf50 100%);
-        padding: 22px 20px; border-radius: 16px; color: white !important;
-        text-align: center; margin-bottom: 25px;
-        box-shadow: 0 6px 20px rgba(46, 125, 50, 0.18);
-    }
-    .header-banner h1, .header-banner p { color: white !important; }
-    
-    .role-card {
-        background: white; padding: 22px 20px; border-radius: 16px;
-        border: 2px solid #c8e6c9; text-align: center;
-    }
-    
-    .kpi-card {
-        background: white; padding: 16px; border-radius: 12px;
-        text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-        border-left: 5px solid #2e7d32;
-    }
-    .kpi-number { font-size: 1.8rem; font-weight: 800; color: #2e7d32 !important; }
-    .kpi-label { font-size: 0.88rem; color: #555 !important; font-weight: 600; }
-
-    .stTabs [data-baseweb="tab-list"] { gap: 12px !important; background-color: transparent !important; }
-    .stTabs [data-baseweb="tab"] {
-        height: auto !important; background-color: #ffffff !important;
-        border-radius: 10px !important; padding: 12px 24px !important;
-        font-weight: 700 !important; color: #2e7d32 !important;
-        border: 1px solid #c8e6c9 !important;
-    }
-    .stTabs [aria-selected="true"] { background-color: #2e7d32 !important; color: #ffffff !important; }
-    .stTabs [aria-selected="true"] p { color: #ffffff !important; }
-    .stTabs [aria-selected="false"] p { color: #2e7d32 !important; }
-    
-    .leaderboard-card {
-        background: #ffffff; padding: 15px; border-radius: 12px;
-        border-left: 6px solid #fbc02d; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        margin-bottom: 10px;
-    }
-    </style>
+<style>
+.main-title {
+    font-size: 38px;
+    font-weight: 800;
+    margin-bottom: 0;
+}
+.subtitle {
+    color: #6b7280;
+    margin-bottom: 20px;
+}
+.card {
+    padding: 18px;
+    border-radius: 14px;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    margin-bottom: 12px;
+}
+.status-wait {
+    color: #b45309;
+    font-weight: 700;
+}
+.status-ok {
+    color: #15803d;
+    font-weight: 700;
+}
+.status-spam {
+    color: #b91c1c;
+    font-weight: 700;
+}
+.small {
+    color: #6b7280;
+    font-size: 13px;
+}
+</style>
 """, unsafe_allow_html=True)
 
-# =========================================================
-# 2. CẤU HÌNH GOOGLE GEMINI AI (SỬ DỤNG GEMINI-2.0-FLASH)
-# =========================================================
-raw_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-gemini_key = str(raw_gemini_key).strip().strip('"').strip("'")
-# Mặc định sử dụng gemini-2.0-flash theo yêu cầu mới nhất
-gemini_model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.0-flash").strip().strip('"').strip("'")
+# ============================================================
+# DATABASE
+# ============================================================
 
-if gemini_key:
-    genai.configure(api_key=gemini_key)
+def get_conn():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-UPLOAD_DIR = Path("uploaded_images")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-def compress_image(uploaded_file, max_size=800):
-    """Nén ảnh nhỏ lại để giảm dung lượng mạng và tăng tốc độ xử lý của AI"""
-    image = Image.open(uploaded_file)
-    if image.mode in ("RGBA", "P"):
-        image = image.convert("RGB")
-    image.thumbnail((max_size, max_size))
-    img_byte_arr = io.BytesIO()
-    image.save(img_byte_arr, format='JPEG', quality=80)
-    return img_byte_arr.getvalue()
-
-# Sử dụng Cache để tiết kiệm 100% lượt gọi API nếu ảnh đã từng được gửi phân tích
-@st.cache_data(show_spinner=False)
-def call_gemini_vision_cached(image_bytes, system_prompt, json_example_str):
-    if not gemini_key:
-        raise Exception("Chưa cấu hình GEMINI_API_KEY trong Streamlit Secrets!")
-        
-    try:
-        model = genai.GenerativeModel(gemini_model_name)
-        image_part = {"mime_type": "image/jpeg", "data": image_bytes}
-        
-        full_prompt = f"""
-        {system_prompt}
-        
-        BẠN BẮT BUỘC TRẢ VỀ DẠNG JSON THUẦN TÚY, KHÔNG DÙNG MARKDOWN, KHÔNG CÓ ```json. CẤU TRÚC JSON CHUẨN:
-        {json_example_str}
-        """
-
-        response = model.generate_content([full_prompt, image_part])
-        clean_text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_text), f"Gemini ({gemini_model_name})"
-    except Exception as e:
-        raise Exception(f"Lỗi kết nối Gemini AI ({gemini_model_name}): {str(e)}")
-
-json_waste_example = {
-    "contains_waste": True,
-    "is_waste_amount_sufficient": True,
-    "rejection_reason": "",
-    "waste_type": "Rác nhựa, túi nilon",
-    "severity": "Trung bình",
-    "assigned_role": "VOLUNTEER",
-    "action_plan": "Thu gom và phân loại rác thải"
-}
-
-json_verify_example = {
-    "is_cleaned": True,
-    "confidence_score": 85,
-    "ai_comment": "Khu vực đã được dọn sạch rác.",
-    "earned_points": 30
-}
-
-# =========================================================
-# 3. CƠ SỞ DỮ LIỆU SQLITE
-# =========================================================
-DB_FILE = "reports.db"
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
+    conn = get_conn()
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            location_name TEXT,
-            latitude REAL,
-            longitude REAL,
-            description TEXT,
             image_path TEXT,
-            waste_type TEXT,
-            severity TEXT,
-            assigned_role TEXT,
-            action_plan TEXT,
-            status TEXT DEFAULT 'Chờ xử lý',
-            cleaned_image_path TEXT,
-            verification_note TEXT,
-            cleaner_team TEXT,
-            points_earned INTEGER DEFAULT 0,
+            description TEXT DEFAULT '',
+            location TEXT DEFAULT '',
+            status TEXT DEFAULT 'Chờ AI',
+            ai_result TEXT DEFAULT '',
+            ai_raw_json TEXT DEFAULT '',
+            ai_analyzed INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    ''')
+    """)
     conn.commit()
     conn.close()
 
-init_db()
 
-def save_report(location_name, lat, lng, description, image_path, waste_type, severity, assigned_role, action_plan):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO reports (location_name, latitude, longitude, description, image_path, waste_type, severity, assigned_role, action_plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (location_name, lat, lng, description, image_path, waste_type, severity, assigned_role, action_plan)
+def add_column_if_missing(column_name, column_type, default_sql=None):
+    conn = get_conn()
+    columns = [r["name"] for r in conn.execute("PRAGMA table_info(reports)").fetchall()]
+    if column_name not in columns:
+        sql = f"ALTER TABLE reports ADD COLUMN {column_name} {column_type}"
+        if default_sql:
+            sql += f" DEFAULT {default_sql}"
+        conn.execute(sql)
+        conn.commit()
+    conn.close()
+
+
+def migrate_db():
+    init_db()
+
+    add_column_if_missing("ai_raw_json", "TEXT", "''")
+    add_column_if_missing("ai_analyzed", "INTEGER", "0")
+
+
+def cleanup_old_spam():
+    """Xóa cả file ảnh và bản ghi spam cũ hơn 7 ngày."""
+    conn = get_conn()
+    cutoff = datetime.now() - timedelta(days=7)
+
+    rows = conn.execute("""
+        SELECT id, image_path
+        FROM reports
+        WHERE status = 'Spam/Từ chối'
+        AND datetime(created_at) < datetime(?)
+    """, (cutoff.strftime("%Y-%m-%d %H:%M:%S"),)).fetchall()
+
+    for row in rows:
+        path = row["image_path"]
+        if path and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    conn.execute("""
+        DELETE FROM reports
+        WHERE status = 'Spam/Từ chối'
+        AND datetime(created_at) < datetime(?)
+    """, (cutoff.strftime("%Y-%m-%d %H:%M:%S"),))
+    conn.commit()
+    conn.close()
+
+
+migrate_db()
+cleanup_old_spam()
+
+# ============================================================
+# CLOUDFLARE AI
+# ============================================================
+
+def cloudflare_configured():
+    return bool(CF_ACCOUNT_ID and CF_AUTH_TOKEN)
+
+
+def cloudflare_url():
+    return (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{CF_ACCOUNT_ID}/ai/run/{CF_MODEL}"
     )
+
+
+def agree_to_meta_license():
+    """Kích hoạt model lần đầu theo yêu cầu của Cloudflare/Meta."""
+    if not cloudflare_configured():
+        return False, "Chưa cấu hình CLOUDFLARE_ACCOUNT_ID hoặc CLOUDFLARE_AUTH_TOKEN."
+
+    try:
+        response = requests.post(
+            cloudflare_url(),
+            headers={
+                "Authorization": f"Bearer {CF_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"prompt": "agree"},
+            timeout=60,
+        )
+
+        data = response.json()
+
+        if response.ok and data.get("success"):
+            return True, "Model đã được kích hoạt."
+        return False, json.dumps(data.get("errors", data), ensure_ascii=False)
+
+    except requests.RequestException as e:
+        return False, f"Lỗi kết nối Cloudflare: {e}"
+
+
+def prepare_image(image_path, max_side=1024, quality=82):
+    """
+    Đọc ảnh, thu nhỏ và chuyển thành JPEG bytes.
+    Không thay đổi file gốc của báo cáo.
+    """
+    img = Image.open(image_path).convert("RGB")
+    img.thumbnail((max_side, max_side))
+
+    buffer = BytesIO()
+    img.save(buffer, format="JPEG", quality=quality, optimize=True)
+    return buffer.getvalue()
+
+
+def parse_ai_text(text):
+    """
+    Cố gắng đọc JSON nếu model trả JSON.
+    Nếu model trả văn bản thường, vẫn xử lý bằng từ khóa.
+    """
+    text = (text or "").strip()
+
+    # Loại bỏ markdown code fence nếu có
+    cleaned = text.replace("```json", "").replace("```", "").strip()
+
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    upper = text.upper()
+
+    is_waste = not any(
+        key in upper
+        for key in [
+            "KHÔNG PHẢI RÁC",
+            "KHONG PHAI RAC",
+            "SPAM",
+            "KHÔNG CÓ RÁC",
+            "KHONG CO RAC",
+        ]
+    )
+
+    if "NẶNG" in upper or "NANG" in upper:
+        severity = "Nặng"
+    elif "TRUNG BÌNH" in upper or "TRUNG BINH" in upper:
+        severity = "Trung bình"
+    else:
+        severity = "Nhẹ"
+
+    return {
+        "contains_waste": is_waste,
+        "severity": severity,
+        "description": text,
+        "raw_text": text,
+    }
+
+
+def analyze_image_with_cloudflare(image_path):
+    """
+    Gọi Cloudflare Workers AI Vision.
+    Chỉ được gọi khi admin bấm nút phân tích.
+    """
+    if not cloudflare_configured():
+        return {
+            "success": False,
+            "error": "Chưa cấu hình Cloudflare API.",
+        }
+
+    try:
+        image_bytes = prepare_image(image_path)
+
+        # Cloudflare REST API nhận image dưới dạng mảng byte cho model này.
+        image_array = list(image_bytes)
+
+        prompt = """
+Bạn là AI kiểm tra báo cáo môi trường đô thị.
+
+Hãy phân tích DUY NHẤT hình ảnh được cung cấp.
+
+Trả về JSON hợp lệ, không Markdown, theo đúng mẫu:
+{
+  "contains_waste": true,
+  "is_waste_amount_sufficient": true,
+  "severity": "Nhẹ",
+  "waste_type": "Rác sinh hoạt",
+  "description": "Mô tả ngắn gọn hiện trạng",
+  "spam_reason": ""
+}
+
+Quy tắc:
+- contains_waste = true nếu ảnh thực sự có rác/chất thải/bãi rác hoặc điểm xả rác.
+- contains_waste = false nếu không có rác, ảnh không liên quan, ảnh quá khó xác định hoặc chỉ là ảnh thông thường.
+- is_waste_amount_sufficient = true nếu lượng rác/điểm ô nhiễm đủ rõ để coi là một báo cáo môi trường.
+- severity chỉ được là: "Nhẹ", "Trung bình", "Nặng".
+- waste_type có thể là: "Rác sinh hoạt", "Xà bần", "Rác nhựa", "Rác cồng kềnh", "Rác hỗn hợp", "Khác".
+- Nếu không phải báo cáo rác hợp lệ, ghi lý do ngắn vào spam_reason.
+- Không suy đoán địa điểm hoặc thông tin không nhìn thấy trong ảnh.
+"""
+
+        payload = {
+            "prompt": prompt,
+            "image": image_array,
+            "max_tokens": 350,
+            "temperature": 0.1,
+        }
+
+        response = requests.post(
+            cloudflare_url(),
+            headers={
+                "Authorization": f"Bearer {CF_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=120,
+        )
+
+        try:
+            data = response.json()
+        except Exception:
+            return {
+                "success": False,
+                "error": f"Cloudflare trả về dữ liệu không phải JSON: {response.text[:500]}",
+            }
+
+        if not response.ok or not data.get("success", False):
+            return {
+                "success": False,
+                "error": json.dumps(
+                    data.get("errors", data),
+                    ensure_ascii=False,
+                ),
+            }
+
+        result = data.get("result", {})
+        text = result.get("response", "")
+
+        if not text:
+            text = result.get("text", "")
+
+        parsed = parse_ai_text(text)
+
+        return {
+            "success": True,
+            "parsed": parsed,
+            "raw": data,
+            "text": text,
+        }
+
+    except requests.RequestException as e:
+        return {
+            "success": False,
+            "error": f"Lỗi kết nối Cloudflare: {e}",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Lỗi xử lý ảnh/AI: {e}",
+        }
+
+
+def save_ai_result(report_id, analysis):
+    conn = get_conn()
+
+    if not analysis["success"]:
+        conn.execute("""
+            UPDATE reports
+            SET ai_analyzed = 0,
+                ai_result = ?
+            WHERE id = ?
+        """, (analysis["error"], report_id))
+        conn.commit()
+        conn.close()
+        return
+
+    parsed = analysis["parsed"]
+
+    contains_waste = bool(parsed.get("contains_waste", False))
+    enough = bool(parsed.get("is_waste_amount_sufficient", False))
+
+    if not contains_waste or not enough:
+        status = "Spam/Từ chối"
+    else:
+        status = "Đã duyệt"
+
+    conn.execute("""
+        UPDATE reports
+        SET status = ?,
+            ai_result = ?,
+            ai_raw_json = ?,
+            ai_analyzed = 1
+        WHERE id = ?
+    """, (
+        status,
+        analysis["text"],
+        json.dumps(analysis["raw"], ensure_ascii=False),
+        report_id,
+    ))
+
     conn.commit()
     conn.close()
 
-def get_all_reports():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, location_name, latitude, longitude, description, image_path, waste_type, severity, assigned_role, action_plan, status, cleaned_image_path, verification_note, cleaner_team, points_earned, created_at FROM reports ORDER BY id DESC")
-    rows = c.fetchall()
-    conn.close()
-    return rows
 
-def update_resolution(report_id, cleaned_image_path, verification_note, cleaner_team, points):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("UPDATE reports SET status = 'Đã hoàn thành', cleaned_image_path = ?, verification_note = ?, cleaner_team = ?, points_earned = ? WHERE id = ?", 
-              (cleaned_image_path, verification_note, cleaner_team, points, report_id))
-    conn.commit()
-    conn.close()
+# ============================================================
+# SIDEBAR
+# ============================================================
 
-def get_leaderboard():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT cleaner_team, SUM(points_earned) as total_points, COUNT(id) as tasks_completed FROM reports WHERE status = 'Đã hoàn thành' AND cleaner_team IS NOT NULL GROUP BY cleaner_team ORDER BY total_points DESC")
-    rows = c.fetchall()
-    conn.close()
-    return rows
+st.sidebar.title("🌿 Urban GreenEye")
+st.sidebar.caption("AI giám sát điểm ô nhiễm đô thị")
 
-def clear_all_history():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM reports")
-    c.execute("DELETE FROM sqlite_sequence WHERE name='reports'")
-    conn.commit()
-    conn.close()
+menu = st.sidebar.radio(
+    "Chức năng",
+    [
+        "📷 Gửi báo cáo",
+        "📋 Quản lý & AI",
+        "🗑️ Quản lý Spam",
+        "⚙️ Cài đặt AI",
+    ],
+)
 
-# =========================================================
-# 4. GIAO DIỆN CHÍNH
-# =========================================================
-if "user_role" not in st.session_state:
-    st.session_state.user_role = None
+st.sidebar.divider()
 
-if "is_processing" not in st.session_state:
-    st.session_state.is_processing = False
-
-STAFF_PIN = "1234"
-
-st.markdown("""
-    <div class="header-banner">
-        <h1>🌱 URBAN GREENEYE AI – MẮT XANH ĐÔ THỊ</h1>
-        <p>Hệ Thống Phản Ánh Môi Trường Tối Ưu Hóa Tích Hợp Google Gemini AI</p>
-    </div>
-""", unsafe_allow_html=True)
-
-if st.session_state.user_role is None:
-    st.markdown("<h3 style='text-align: center; color: #1b5e20;'>👋 CHỌN VAI TRÒ TRUY CẬP HỆ THỐNG</h3>", unsafe_allow_html=True)
-    st.write("")
-    
-    _, col1, col2, _ = st.columns([0.3, 2, 2, 0.3], gap="large")
-    
-    with col1:
-        st.markdown("""
-        <div class="role-card">
-            <div style="font-size:3rem; margin-bottom:10px;">👤</div>
-            <h3 style="color: #2e7d32;">NGƯỜI DÂN PHẢN ÁNH</h3>
-            <p style="color: #666; font-size: 0.92rem;">Gửi báo cáo rác thải, xem điểm đã dọn dẹp & bản đồ tương tác.</p>
-        </div>
-        """, unsafe_allow_html=True)
-        st.write("")
-        if st.button("👉 Vào Giao Diện Người Dân", type="primary", use_container_width=True):
-            st.session_state.user_role = "CITIZEN"
-            st.rerun()
-
-    with col2:
-        st.markdown("""
-        <div class="role-card">
-            <div style="font-size:3rem; margin-bottom:10px;">🧹🏛️</div>
-            <h3 style="color: #1b5e20;">ĐỘI TÌNH NGUYỆN & CƠ QUAN</h3>
-            <p style="color: #666; font-size: 0.92rem;">Xử lý sự cố, thẩm định ảnh làm sạch qua AI và vinh danh.</p>
-        </div>
-        """, unsafe_allow_html=True)
-        staff_pin = st.text_input("🔑 Mã bảo mật (PIN)", type="password", key="pin_staff", placeholder="Nhập PIN...")
-        if st.button("🔓 Đăng Nhập Dashboard Quản Lý", use_container_width=True):
-            if staff_pin == STAFF_PIN:
-                st.session_state.user_role = "STAFF"
-                st.rerun()
-            else:
-                st.error("❌ Mã PIN chưa đúng! (Mã mặc định: 1234)")
-
+if cloudflare_configured():
+    st.sidebar.success("☁️ Cloudflare AI: Đã cấu hình")
 else:
-    col_nav1, col_nav2 = st.columns([3.5, 1.2])
-    with col_nav1:
-        role_badge = "🟢 Giao diện Người Dân Phản Ánh" if st.session_state.user_role == "CITIZEN" else "🛡 Dashboard Đội Tình Nguyện & Cơ Quan"
-        st.markdown(f"<h3 style='color: #1b5e20; margin:0;'>{role_badge}</h3>", unsafe_allow_html=True)
-    with col_nav2:
-        if st.button("🚪 Đổi vai trò / Đăng xuất", use_container_width=True):
-            st.session_state.user_role = None
-            st.rerun()
+    st.sidebar.error("☁️ Cloudflare AI: Chưa cấu hình")
 
-    st.markdown("---")
+st.sidebar.caption(f"Model: `{CF_MODEL}`")
+st.sidebar.caption("AI tự động phân tích ngay sau khi người dân gửi ảnh.")
 
-    if st.session_state.user_role == "CITIZEN":
-        tab_c1, tab_c2, tab_c3 = st.tabs(["📝 Gửi Báo Cáo Phản Ánh", "✅ Danh Sách Đã Dọn Dẹp", "🗺️ Bản Đồ Môi Trường"])
-        
-        with tab_c1:
-            col1, col2 = st.columns([1, 1], gap="large")
-            with col1:
-                st.markdown("#### 📍 1. Chọn vị trí & Điền thông tin")
-                default_lat, default_lng = 10.7769, 106.7009
-                m = folium.Map(location=[default_lat, default_lng], zoom_start=13, tiles="OpenStreetMap")
-                map_data = st_folium(m, height=270, width="100%", key="input_map")
-                selected_lat, selected_lng = default_lat, default_lng
-                if map_data and map_data.get("last_clicked"):
-                    selected_lat = map_data["last_clicked"]["lat"]
-                    selected_lng = map_data["last_clicked"]["lng"]
-                    st.success(f"🎯 Đã ghim tọa độ: `{selected_lat:.5f}, {selected_lng:.5f}`")
 
-                location_name = st.text_input("Tên địa điểm / Con đường", placeholder="Ví dụ: Công viên 23/9, Quận 1")
-                description = st.text_area("Mô tả thêm (Tùy chọn)", placeholder="Mô tả hiện trạng rác thải...")
-                uploaded_file = st.file_uploader("📸 2. Tải ảnh thực tế điểm ô nhiễm *", type=["jpg", "jpeg", "png"])
-                
-                if uploaded_file:
-                    st.image(uploaded_file, caption="Ảnh thực tế đã tải", use_container_width=True)
+# ============================================================
+# HEADER
+# ============================================================
 
-            with col2:
-                st.markdown("#### 🤖 3. Gemini Kiểm Duyệt & Anti-Spam")
-                st.info("Hệ thống tự động kiểm duyệt hình ảnh thông minh và chống báo cáo ảo.")
-                
-                if st.button("🚀 GỬI BÁO CÁO NGAY", type="primary", use_container_width=True, disabled=st.session_state.is_processing):
-                    if not uploaded_file:
-                        st.error("⚠️ Vui lòng tải ảnh thực tế điểm ô nhiễm!")
-                    else:
-                        st.session_state.is_processing = True
-                        with st.spinner("🤖 Gemini đang phân tích ảnh cực nhanh..."):
-                            try:
-                                compressed_bytes = compress_image(uploaded_file)
-                                
-                                save_path = UPLOAD_DIR / uploaded_file.name
-                                with open(save_path, "wb") as f:
-                                    f.write(compressed_bytes)
+st.markdown(
+    '<div class="main-title">🌿 Urban GreenEye AI</div>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="subtitle">Hệ thống tiếp nhận và phân tích báo cáo rác thải bằng Cloudflare Vision AI.</div>',
+    unsafe_allow_html=True,
+)
 
-                                prompt = (
-                                    "Phân tích bức ảnh này để báo cáo môi trường:\n"
-                                    "1. KIỂM TRA RÁC: Bức ảnh có thực sự chứa rác thải gây ô nhiễm không? (Nếu là ảnh selfie, mặt người, cảnh vật sạch... -> contains_waste = False).\n"
-                                    "2. LƯỢNG RÁC: Khối lượng rác có đủ lớn để tạo thành bãi ô nhiễm không? (Nếu quá nhỏ -> is_waste_amount_sufficient = False).\n"
-                                    "3. Phân loại waste_type, severity (Thấp/Trung bình/Nghiêm trọng), và assigned_role: Rác nhẹ -> 'VOLUNTEER', Rác nặng/nguy hại -> 'AUTHORITY'."
-                                )
-                                
-                                data, ai_engine = call_gemini_vision_cached(
-                                    image_bytes=compressed_bytes,
-                                    system_prompt=prompt,
-                                    json_example_str=json.dumps(json_waste_example, ensure_ascii=False)
-                                )
-                                
-                                if not data.get("contains_waste", False):
-                                    st.error("❌ BÁO CÁO BỊ TỪ CHỐI (ẢNH KHÔNG HỢP LỆ)!")
-                                    st.warning(f"🤖 **Phản hồi từ {ai_engine}:** {data.get('rejection_reason', 'Ảnh tải lên không phát hiện rác thải ô nhiễm.')}")
-                                elif not data.get("is_waste_amount_sufficient", False):
-                                    st.error("❌ BÁO CÁO BỊ TỪ CHỐI (LƯỢNG RÁC KHÔNG ĐỦ NGƯỠNG)!")
-                                    st.warning(f"🤖 **Phản hồi từ {ai_engine}:** {data.get('rejection_reason', 'Khối lượng rác quá nhỏ không đủ cấu thành ô nhiễm.')}")
-                                else:
-                                    final_loc = location_name if location_name else f"Tọa độ ({selected_lat:.4f}, {selected_lng:.4f})"
-                                    save_report(final_loc, selected_lat, selected_lng, description, str(save_path), data.get("waste_type","Rác sinh hoạt"), data.get("severity","Trung bình"), data.get("assigned_role","VOLUNTEER"), data.get("action_plan","Thu gom rác"))
-                                    st.balloons()
-                                    st.success(f"🎉 Báo cáo hợp lệ! {ai_engine} đã ghi nhận và chuyển tới đơn vị xử lý.")
-                            except Exception as e:
-                                st.error(f"Lỗi hệ thống Gemini AI: {e}")
-                            finally:
-                                st.session_state.is_processing = False
 
-        with tab_c2:
-            st.markdown("#### ✅ Danh sách các điểm ô nhiễm đã được xử lý làm sạch thành công")
-            all_reports = get_all_reports()
-            cleaned_reports = [r for r in all_reports if r[10] == "Đã hoàn thành"]
-            
-            if not cleaned_reports:
-                st.info("🌱 Hiện chưa có địa điểm nào hoàn tất dọn dẹp. Các báo cáo đang được xử lý!")
+# ============================================================
+# 1. GỬI BÁO CÁO
+# ============================================================
+
+if menu == "📷 Gửi báo cáo":
+
+    st.header("📷 Gửi báo cáo điểm xả rác")
+
+    st.info(
+        "Ảnh được lưu vào hệ thống trước, sau đó Cloudflare Vision AI "
+        "tự động phân tích ngay. Người dân không cần bấm nút phân tích."
+    )
+
+    with st.form("report_form", clear_on_submit=True):
+
+        uploaded_file = st.file_uploader(
+            "Ảnh hiện trạng",
+            type=["jpg", "jpeg", "png", "webp"],
+        )
+
+        location = st.text_input(
+            "Địa điểm",
+            placeholder="Ví dụ: Công viên, đường, khu dân cư..."
+        )
+
+        description = st.text_area(
+            "Mô tả",
+            placeholder="Ví dụ: Có nhiều túi rác bên lề đường..."
+        )
+
+        submitted = st.form_submit_button(
+            "🚀 Gửi báo cáo ngay",
+            use_container_width=True,
+        )
+
+    if submitted:
+
+        if uploaded_file is None:
+            st.warning("⚠️ Vui lòng chọn ảnh.")
+            st.stop()
+
+        if not location.strip():
+            st.warning("⚠️ Vui lòng nhập địa điểm.")
+            st.stop()
+
+        try:
+            # Đọc và kiểm tra ảnh trước khi lưu
+            image = Image.open(uploaded_file).convert("RGB")
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"{timestamp}.jpg"
+            image_path = os.path.join(UPLOAD_DIR, filename)
+
+            image.save(
+                image_path,
+                format="JPEG",
+                quality=90,
+            )
+
+            # ========================================================
+            # 1. LƯU BÁO CÁO NGAY VÀO DATABASE
+            # ========================================================
+            # Ảnh được lưu trước. Sau khi INSERT thành công,
+            # hệ thống tự động gọi AI - người dân không cần bấm thêm nút nào.
+            conn = get_conn()
+            cursor = conn.execute("""
+                INSERT INTO reports (
+                    image_path,
+                    description,
+                    location,
+                    status,
+                    ai_result,
+                    ai_analyzed
+                )
+                VALUES (?, ?, ?, 'Đang phân tích', 'AI đang phân tích...', 0)
+            """, (
+                image_path,
+                description.strip(),
+                location.strip(),
+            ))
+
+            report_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+
+            st.success(
+                f"🎉 Đã tiếp nhận báo cáo **#{report_id}** và lưu ảnh thành công!"
+            )
+
+            # ========================================================
+            # 2. TỰ ĐỘNG PHÂN TÍCH AI
+            # ========================================================
+            # Không cần admin gọi. Ngay sau khi lưu DB, Cloudflare Vision
+            # được gọi tự động.
+            if not cloudflare_configured():
+                conn = get_conn()
+                conn.execute("""
+                    UPDATE reports
+                    SET status = 'Chờ AI',
+                        ai_result = ?
+                    WHERE id = ?
+                """, (
+                    "Chưa thể phân tích tự động: chưa cấu hình Cloudflare AI.",
+                    report_id,
+                ))
+                conn.commit()
+                conn.close()
+
+                st.warning(
+                    "⚠️ Ảnh đã lưu nhưng Cloudflare AI chưa được cấu hình. "
+                    "Hãy cấu hình API để AI tự động phân tích."
+                )
             else:
-                for r in cleaned_reports:
-                    r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
-                    with st.expander(f"✨ [ĐÃ DỌN SẠCH] {r_loc} — Thực hiện bởi: {r_team} (+{r_points} điểm)"):
-                        col_before, col_after = st.columns(2)
-                        with col_before:
-                            st.markdown("##### 🔴 Hiện trạng rác ban đầu:")
-                            if os.path.exists(r_img): st.image(r_img, use_container_width=True)
-                            st.caption(f"**Loại rác:** {r_type} | **Mức độ:** {r_sev}")
-                        with col_after:
-                            st.markdown("##### 🟢 Kết quả sau khi làm sạch:")
-                            if r_clean_img and os.path.exists(r_clean_img): st.image(r_clean_img, use_container_width=True)
-                            st.success(f"🏆 **Đơn vị thực hiện:** {r_team}")
-                            st.info(f"🤖 **Gemini Thẩm Định:**\n{r_ver_note}")
+                with st.spinner("🤖 AI đang tự động phân tích ảnh..."):
+                    analysis = analyze_image_with_cloudflare(image_path)
+                    save_ai_result(report_id, analysis)
 
-        with tab_c3:
-            st.markdown("#### 🗺️ Bản đồ các điểm ô nhiễm cộng đồng")
-            reports = get_all_reports()
-            if reports:
-                m_all = folium.Map(location=[reports[0][2], reports[0][3]], zoom_start=12, tiles="OpenStreetMap")
-                for r in reports:
-                    color = "green" if r[10] == "Đã hoàn thành" else "red"
-                    folium.Marker([r[2], r[3]], popup=f"<b>{r[1]}</b><br>Trạng thái: {r[10]}", icon=folium.Icon(color=color, icon="leaf")).add_to(m_all)
-                st_folium(m_all, height=450, width="100%", key="cit_map")
+                if analysis["success"]:
+                    parsed = analysis["parsed"]
+                    contains_waste = bool(parsed.get("contains_waste", False))
+                    enough = bool(
+                        parsed.get("is_waste_amount_sufficient", False)
+                    )
 
-    elif st.session_state.user_role == "STAFF":
-        reports = get_all_reports()
-        total_reports = len(reports)
-        pending_reports = sum(1 for r in reports if r[10] != "Đã hoàn thành")
-        completed_reports = sum(1 for r in reports if r[10] == "Đã hoàn thành")
-        success_rate = int((completed_reports / total_reports * 100)) if total_reports > 0 else 0
+                    if contains_waste and enough:
+                        st.success(
+                            "🤖 AI đã phân tích xong: báo cáo hợp lệ và đã được duyệt."
+                        )
+                    else:
+                        st.warning(
+                            "🤖 AI đã phân tích: báo cáo không đủ điều kiện "
+                            "và đã được đưa vào Spam/Từ chối."
+                        )
 
-        k1, k2, k3, k4 = st.columns(4)
-        with k1: st.markdown(f'<div class="kpi-card"><div class="kpi-number">{total_reports}</div><div class="kpi-label">Tổng phản ánh</div></div>', unsafe_allow_html=True)
-        with k2: st.markdown(f'<div class="kpi-card" style="border-left-color:#e53935;"><div class="kpi-number" style="color:#e53935;">{pending_reports}</div><div class="kpi-label">🔴 Cần dọn dẹp</div></div>', unsafe_allow_html=True)
-        with k3: st.markdown(f'<div class="kpi-card" style="border-left-color:#43a047;"><div class="kpi-number" style="color:#43a047;">{completed_reports}</div><div class="kpi-label">🟢 Đã hoàn thành</div></div>', unsafe_allow_html=True)
-        with k4: st.markdown(f'<div class="kpi-card" style="border-left-color:#1e88e5;"><div class="kpi-number" style="color:#1e88e5;">{success_rate}%</div><div class="kpi-label">⚡ Tỷ lệ hoàn thành</div></div>', unsafe_allow_html=True)
-        
-        st.write("")
+                    st.info(
+                        f"**Kết quả AI:** "
+                        f"{analysis.get('text', 'Không có kết quả')}"
+                    )
+                else:
+                    st.error(
+                        "⚠️ Ảnh đã được lưu nhưng AI phân tích bị lỗi. "
+                        "Báo cáo được giữ lại để có thể xử lý lại."
+                    )
+                    st.caption(analysis.get("error", "Lỗi không xác định."))
 
-        with st.expander("⚙️ Quản trị hệ thống & Xóa lịch sử dữ liệu"):
-            st.warning("⚠️ Hành động này sẽ xóa vĩnh viễn toàn bộ danh sách phản ánh, lịch sử dọn dẹp và điểm vinh danh!")
-            if st.button("🗑 XÓA SẠCH LỊCH SỬ BÁO CÁO (RESET SYSTEM)", type="primary"):
-                clear_all_history()
-                st.success("✅ Đã xóa toàn bộ lịch sử dữ liệu thành công!")
+        except Exception as e:
+            st.error(f"Không thể lưu báo cáo: {e}")
+
+
+# ============================================================
+# 2. QUẢN LÝ & AI
+# ============================================================
+
+elif menu == "📋 Quản lý & AI":
+
+    st.header("📋 Quản lý báo cáo")
+
+    pin = st.text_input(
+        "🔐 Mã quản trị",
+        type="password",
+        key="admin_pin",
+    )
+
+    if pin != STAFF_PIN:
+        st.warning("Nhập đúng mã quản trị để mở khu vực xử lý AI.")
+        st.stop()
+
+    conn = get_conn()
+
+    pending = conn.execute("""
+        SELECT *
+        FROM reports
+        WHERE status = 'Chờ AI'
+        ORDER BY id DESC
+    """).fetchall()
+
+    all_rows = conn.execute("""
+        SELECT *
+        FROM reports
+        ORDER BY id DESC
+    """).fetchall()
+
+    conn.close()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Tổng báo cáo", len(all_rows))
+    c2.metric("Đang chờ AI", len(pending))
+    c3.metric(
+        "Đã duyệt",
+        sum(1 for r in all_rows if r["status"] == "Đã duyệt")
+    )
+
+    st.divider()
+
+    if pending:
+        st.subheader("🤖 Báo cáo chưa được AI phân tích")
+
+        if not cloudflare_configured():
+            st.error(
+                "Chưa cấu hình Cloudflare. Hãy vào mục 'Cài đặt AI'."
+            )
+        else:
+
+            if st.button(
+                f"🤖 Phân tích tất cả {len(pending)} báo cáo đang chờ",
+                type="primary",
+                use_container_width=True,
+            ):
+                progress = st.progress(0)
+                success_count = 0
+                error_count = 0
+
+                for index, row in enumerate(pending, start=1):
+
+                    if not row["image_path"] or not os.path.isfile(row["image_path"]):
+                        conn = get_conn()
+                        conn.execute("""
+                            UPDATE reports
+                            SET ai_result = ?
+                            WHERE id = ?
+                        """, ("Không tìm thấy file ảnh.", row["id"]))
+                        conn.commit()
+                        conn.close()
+                        error_count += 1
+                    else:
+                        result = analyze_image_with_cloudflare(row["image_path"])
+
+                        if result["success"]:
+                            save_ai_result(row["id"], result)
+                            success_count += 1
+                        else:
+                            save_ai_result(row["id"], result)
+                            error_count += 1
+
+                    progress.progress(index / len(pending))
+
+                st.success(
+                    f"Hoàn tất: {success_count} thành công, {error_count} lỗi."
+                )
                 st.rerun()
 
-        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Báo Cáo & AI Thẩm Định (>70%)", "🏆 Bảng Vàng Vinh Danh", "🗺️ Bản Đồ Sự Cố"])
-        
-        with tab_s1:
-            if not reports:
-                st.info("🎉 Hiện tại không có báo cáo ô nhiễm nào cần xử lý.")
-            else:
-                for r in reports:
-                    r_id, r_loc, r_lat, r_lng, r_desc, r_img, r_type, r_sev, r_role, r_plan, r_status, r_clean_img, r_ver_note, r_team, r_points, r_time = r
-                    status_badge = "🟢 Đã hoàn thành" if r_status == "Đã hoàn thành" else "🔴 Chờ xử lý"
-                    role_label = "🧹 Đội Tình Nguyện" if r_role == "VOLUNTEER" else "🏛 Cơ Quan Chức Năng"
-                    
-                    with st.expander(f"[{status_badge}] Nhiệm vụ #{r_id}: {r_loc} — ({role_label})"):
-                        c1, c2 = st.columns([1, 1], gap="medium")
-                        with c1:
-                            st.markdown("##### 📸 Bằng chứng ô nhiễm ban đầu:")
-                            if os.path.exists(r_img): st.image(r_img, use_container_width=True)
-                            st.markdown(f"• **📍 Vị trí:** {r_loc}")
-                            st.markdown(f"• **🏷️ Loại rác:** {r_type} | **Mức độ:** {r_sev}")
-                            st.info(f"💡 **Phương án gợi ý:** {r_plan}")
+    else:
+        st.info("Không có báo cáo đang chờ AI.")
 
-                        with c2:
-                            st.markdown("##### 🤖 GEMINI AI THẨM ĐỊNH & TÍCH ĐIỂM")
-                            if r_status == "Đã hoàn thành":
-                                st.success(f"✅ Đã hoàn thành dọn dẹp bởi **{r_team}** (+{r_points} điểm vinh danh)")
-                                if r_clean_img and os.path.exists(r_clean_img):
-                                    st.image(r_clean_img, caption="Ảnh thực tế sau dọn dẹp", use_container_width=True)
-                                st.markdown(f"**Nhận xét Gemini:**\n{r_ver_note}")
-                            else:
-                                team_name_input = st.text_input(f"🏷️ Tên Cá Nhân / Đội Dọn Dẹp (Mã #{r_id})", placeholder="VD: Đội Tình Nguyện Xanh 1", key=f"team_{r_id}")
-                                clean_file = st.file_uploader(f"Tải ảnh đã dọn xong (Mã #{r_id})", type=["jpg", "png", "jpeg"], key=f"up_staff_{r_id}")
-                                
-                                if clean_file and st.button(f"🚀 Gemini Thẩm Định & Tích Điểm #{r_id}", type="primary"):
-                                    if not team_name_input.strip():
-                                        st.error("⚠️ Vui lòng nhập Tên Đội hoặc Cá Nhân dọn dẹp!")
-                                    else:
-                                        with st.spinner("🤖 Gemini đang đối chiếu ảnh trước và sau..."):
-                                            try:
-                                                compressed_clean_bytes = compress_image(clean_file)
-                                                clean_save_path = UPLOAD_DIR / f"cleaned_{r_id}_{clean_file.name}"
-                                                with open(clean_save_path, "wb") as f:
-                                                    f.write(compressed_clean_bytes)
+    st.divider()
+    st.subheader("📚 Danh sách báo cáo")
 
-                                                verify_prompt = (
-                                                    "So sánh bức ảnh dọn dẹp này với hiện trạng rác ban đầu:\n"
-                                                    "1. Đánh giá tỷ lệ phần trăm dọn dẹp sạch sẽ (confidence_score từ 0 đến 100).\n"
-                                                    "2. Only set is_cleaned = True khi tỷ lệ sạch đạt từ 70% trở lên.\n"
-                                                    "3. Tích điểm earned_points (từ 10 đến 50 điểm) dựa trên lượng rác đã giải quyết nếu đạt >70%."
-                                                )
+    if not all_rows:
+        st.info("Chưa có báo cáo.")
+        st.stop()
 
-                                                v_data, ai_engine = call_gemini_vision_cached(
-                                                    image_bytes=compressed_clean_bytes,
-                                                    system_prompt=verify_prompt,
-                                                    json_example_str=json.dumps(json_verify_example, ensure_ascii=False)
-                                                )
-                                                
-                                                score = v_data.get("confidence_score", 0)
-                                                pts = v_data.get("earned_points", 0)
-                                                is_clean = v_data.get("is_cleaned", False)
-                                                
-                                                if is_clean or score >= 70:
-                                                    note = f"Thăng điểm dọn sạch qua {ai_engine}: {score}/100\nNhận xét: {v_data.get('ai_comment','')}"
-                                                    update_resolution(r_id, str(clean_save_path), note, team_name_input.strip(), pts)
-                                                    st.balloons()
-                                                    st.success(f"🎉 Chúc mừng **{team_name_input}**! {ai_engine} xác minh đạt {score}% và cộng +{pts} điểm!")
-                                                    st.rerun()
-                                                else:
-                                                    st.warning(f"⚠️ {ai_engine} đánh giá kết quả chỉ đạt **{score}%** (Chưa đạt mốc 70%). Vui lòng dọn dẹp thêm!")
-                                            except Exception as e:
-                                                st.error(f"Lỗi Gemini AI: {e}")
+    for row in all_rows:
 
-        with tab_s2:
-            st.markdown("### 🏆 BẢNG XẾP HẠNG TÌNH NGUYỆN VIÊN / CƠ QUAN XUẤT SẮC")
-            leaderboard_data = get_leaderboard()
-            if not leaderboard_data:
-                st.info("Chưa có đội nào hoàn thành nhiệm vụ đạt chuẩn > 70%.")
-            else:
-                for idx, (team, total_pts, count) in enumerate(leaderboard_data, 1):
-                    rank_icon = "🥇" if idx == 1 else ("🥈" if idx == 2 else ("🥉" if idx == 3 else f"#{idx}"))
-                    st.markdown(f"""
-                    <div class="leaderboard-card">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <h4 style="margin:0; color:#1b5e20;">{rank_icon} {team}</h4>
-                                <span style="font-size:0.88rem; color:#666;">Đã hoàn thành: <b>{count} nhiệm vụ</b></span>
-                            </div>
-                            <div style="text-align:right;">
-                                <span style="font-size:1.4rem; font-weight:800; color:#d81b60;">+{total_pts}</span>
-                                <span style="font-size:0.85rem; color:#888;"> điểm</span>
-                            </div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+        status = row["status"]
 
-        with tab_s3:
-            st.markdown("#### 🗺️ Bản đồ quản lý sự cố")
-            if reports:
-                m_staff = folium.Map(location=[reports[0][2], reports[0][3]], zoom_start=12, tiles="OpenStreetMap")
-                for r in reports:
-                    color = "green" if r[10] == "Đã hoàn thành" else ("orange" if r[8] == "VOLUNTEER" else "red")
-                    folium.Marker([r[2], r[3]], popup=f"<b>{r[1]}</b><br>Trạng thái: {r[10]}", icon=folium.Icon(color=color, icon="leaf")).add_to(m_staff)
-                st_folium(m_staff, height=450, width="100%", key="staff_map")
+        if status == "Spam/Từ chối":
+            status_icon = "🚫"
+        elif status == "Đã duyệt":
+            status_icon = "✅"
+        else:
+            status_icon = "⏳"
+
+        with st.expander(
+            f"{status_icon} Báo cáo #{row['id']} — {row['location']} — {status}"
+        ):
+
+            left, right = st.columns([1, 1])
+
+            with left:
+                if row["image_path"] and os.path.isfile(row["image_path"]):
+                    st.image(
+                        row["image_path"],
+                        caption=f"Báo cáo #{row['id']}",
+                        use_container_width=True,
+                    )
+                else:
+                    st.warning("Không tìm thấy ảnh.")
+
+            with right:
+                st.write(f"**Địa điểm:** {row['location']}")
+                st.write(
+                    f"**Mô tả:** {row['description'] or 'Không có'}"
+                )
+                st.write(f"**Trạng thái:** `{status}`")
+                st.write(f"**Ngày gửi:** {row['created_at']}")
+
+                if row["ai_result"]:
+                    st.write("### 🤖 Kết quả AI")
+                    st.info(row["ai_result"])
+
+                if (
+                    status == "Chờ AI"
+                    and cloudflare_configured()
+                    and row["image_path"]
+                    and os.path.isfile(row["image_path"])
+                ):
+                    if st.button(
+                        f"🤖 Phân tích #{row['id']}",
+                        key=f"analyze_{row['id']}",
+                        use_container_width=True,
+                    ):
+                        with st.spinner("Cloudflare Vision AI đang phân tích..."):
+                            result = analyze_image_with_cloudflare(
+                                row["image_path"]
+                            )
+                            save_ai_result(row["id"], result)
+
+                        if result["success"]:
+                            st.success("Đã phân tích xong.")
+                        else:
+                            st.error(result["error"])
+
+                        st.rerun()
+
+
+# ============================================================
+# 3. QUẢN LÝ SPAM
+# ============================================================
+
+elif menu == "🗑️ Quản lý Spam":
+
+    st.header("🗑️ Quản lý Spam / Từ chối")
+
+    pin = st.text_input(
+        "🔐 Mã quản trị",
+        type="password",
+        key="spam_pin",
+    )
+
+    if pin != STAFF_PIN:
+        st.warning("Nhập đúng mã quản trị.")
+        st.stop()
+
+    conn = get_conn()
+    spam_rows = conn.execute("""
+        SELECT *
+        FROM reports
+        WHERE status = 'Spam/Từ chối'
+        ORDER BY id DESC
+    """).fetchall()
+    conn.close()
+
+    st.info(
+        "Báo cáo bị AI xác định là không hợp lệ sẽ nằm ở đây và "
+        "tự động bị xóa cả ảnh + bản ghi sau 7 ngày."
+    )
+
+    if not spam_rows:
+        st.success("Không có báo cáo spam.")
+    else:
+
+        st.metric("Spam hiện tại", len(spam_rows))
+
+        for row in spam_rows:
+
+            with st.expander(
+                f"🚫 Spam #{row['id']} — {row['location']}"
+            ):
+
+                c1, c2 = st.columns([1, 2])
+
+                with c1:
+                    if row["image_path"] and os.path.isfile(row["image_path"]):
+                        st.image(
+                            row["image_path"],
+                            use_container_width=True,
+                        )
+
+                with c2:
+                    st.write(f"**Địa điểm:** {row['location']}")
+                    st.write(f"**Ngày tạo:** {row['created_at']}")
+                    st.write("**Lý do / kết quả AI:**")
+                    st.write(row["ai_result"] or "Không có")
+
+                    if st.button(
+                        f"🗑️ Xóa ngay #{row['id']}",
+                        key=f"delete_spam_{row['id']}",
+                    ):
+                        path = row["image_path"]
+
+                        if path and os.path.isfile(path):
+                            try:
+                                os.remove(path)
+                            except OSError:
+                                pass
+
+                        conn = get_conn()
+                        conn.execute(
+                            "DELETE FROM reports WHERE id = ?",
+                            (row["id"],),
+                        )
+                        conn.commit()
+                        conn.close()
+
+                        st.success("Đã xóa vĩnh viễn.")
+                        st.rerun()
+
+
+# ============================================================
+# 4. CÀI ĐẶT AI
+# ============================================================
+
+elif menu == "⚙️ Cài đặt AI":
+
+    st.header("⚙️ Cài đặt Cloudflare AI")
+
+    st.write("**Model đang dùng:**")
+    st.code(CF_MODEL)
+
+    if cloudflare_configured():
+        st.success("✅ Account ID và API Token đã được cấu hình.")
+    else:
+        st.error(
+            "❌ Chưa cấu hình Cloudflare Account ID / API Token."
+        )
+
+    st.markdown("""
+### Cấu hình Streamlit Secrets
+
+Tạo file:
+
+`.streamlit/secrets.toml`
+
+và đặt:
+
+```toml
+CLOUDFLARE_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
+CLOUDFLARE_AUTH_TOKEN = "YOUR_API_TOKEN"
+STAFF_PIN = "YOUR_ADMIN_PIN"
+```
+
+### Kích hoạt model lần đầu
+
+Cloudflare yêu cầu chấp nhận Meta License/AUP trước lần sử dụng đầu tiên.
+Nhấn nút bên dưới một lần sau khi đã cấu hình API.
+""")
+
+    if st.button(
+        "☁️ Kích hoạt Cloudflare Vision AI",
+        type="primary",
+        use_container_width=True,
+    ):
+        with st.spinner("Đang kích hoạt model..."):
+            ok, message = agree_to_meta_license()
+
+        if ok:
+            st.success(message)
+        else:
+            st.error(message)
+
+    st.divider()
+
+    st.subheader("📊 Trạng thái hệ thống")
+
+    conn = get_conn()
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM reports"
+    ).fetchone()["n"]
+    waiting = conn.execute(
+        "SELECT COUNT(*) AS n FROM reports WHERE status='Chờ AI'"
+    ).fetchone()["n"]
+    approved = conn.execute(
+        "SELECT COUNT(*) AS n FROM reports WHERE status='Đã duyệt'"
+    ).fetchone()["n"]
+    spam = conn.execute(
+        "SELECT COUNT(*) AS n FROM reports WHERE status='Spam/Từ chối'"
+    ).fetchone()["n"]
+    conn.close()
+
+    a, b, c, d = st.columns(4)
+    a.metric("Tổng", total)
+    b.metric("Chờ AI", waiting)
+    c.metric("Đã duyệt", approved)
+    d.metric("Spam", spam)
+
+    st.caption(
+        "Lưu ý: Workers AI có hạn mức miễn phí theo Neurons/ngày; "
+        "đây không phải API miễn phí vô hạn."
+    )
