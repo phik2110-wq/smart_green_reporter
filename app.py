@@ -22,6 +22,60 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ------------------------------------------------------------
+# TRANG TRÍ GIAO DIỆN TƯƠI XANH (CUSTOM CSS)
+# ------------------------------------------------------------
+st.markdown("""
+    <style>
+    /* Nền chính và font chữ */
+    .stApp {
+        background-color: #f4f9f4;
+    }
+    
+    /* Sidebar xanh tươi mát */
+    [data-testid="stSidebar"] {
+        background-color: #e8f5e9 !important;
+        border-right: 2px solid #c8e6c9;
+    }
+    
+    /* Tiêu đề chính */
+    h1 {
+        color: #1b5e20 !important;
+        font-weight: 700 !important;
+    }
+    h2, h3 {
+        color: #2e7d32 !important;
+    }
+    
+    /* Tùy chỉnh các nút bấm */
+    .stButton>button {
+        background-color: #4caf50 !important;
+        color: white !important;
+        border-radius: 8px !important;
+        border: none !important;
+        font-weight: bold !important;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        background-color: #388e3c !important;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    }
+    
+    /* Khung Expander & Cards */
+    .streamlit-expanderHeader {
+        background-color: #ffffff !important;
+        border-radius: 8px !important;
+        border: 1px solid #c8e6c9 !important;
+    }
+    
+    /* Thông báo Info / Success / Warning */
+    .stAlert {
+        border-radius: 10px !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 DB_FILE = "reports.db"
 UPLOAD_DIR = "uploaded_images"
 CLEANUP_DIR = "cleanup_images"
@@ -316,7 +370,7 @@ def save_ai_result(report_id, analysis):
 # GIAO DIỆN CHÍNH
 # ============================================================
 
-st.sidebar.title("🌿 Urban GreenEye")
+st.sidebar.title("🌱 Urban GreenEye")
 menu = st.sidebar.radio(
     "Điều hướng",
     [
@@ -329,16 +383,17 @@ menu = st.sidebar.radio(
     ],
 )
 
-# KIỂM TRA CHUYỂN MENU ĐỂ TỰ ĐỘNG XÓA TRẠNG THÁI ĐĂNG NHẬP (BẮT NHẬP LẠI PIN MỖI LẦN CHỌN MỤC)
+# TỰ ĐỘNG KHÓA VÀ YÊU CẦU MÃ PIN KHI ĐỔI MENU
 if "last_menu" not in st.session_state:
   st.session_state["last_menu"] = menu
 
 if st.session_state["last_menu"] != menu:
   st.session_state["team_auth_ok"] = False
+  st.session_state["staff_auth_ok"] = False
   st.session_state["admin_auth_ok"] = False
   st.session_state["last_menu"] = menu
 
-st.title("🌿 Urban GreenEye AI")
+st.title("🌳 Urban GreenEye AI - Quản lý Ô nhiễm Đô thị")
 
 # ------------------------------------------------------------
 # 1. GỬI BÁO CÁO (MỌI NGƯỜI TRUY CẬP TỰ DO)
@@ -591,27 +646,36 @@ elif menu == "🏆 Bảng xếp hạng tích điểm":
         st.write(f"**#{idx}. {t['team_name']}** — 🏆 `{t['points']}` điểm ({t['tasks_completed']} điểm rác)")
 
 # ------------------------------------------------------------
-# 5. BÁO CÁO SPAM & XÓA
+# 5. BÁO CÁO SPAM & XÓA (BẢO MẬT MÃ PIN STAFF)
 # ------------------------------------------------------------
 elif menu == "🗑️ Báo cáo Spam & Xóa":
   st.header("🗑 Danh sách Báo cáo Spam/Từ chối")
 
+  # YÊU CẦU MÃ PIN STAFF HOẶC ADMIN KHI TRUY CẬP
+  if not st.session_state.get("staff_auth_ok", False):
+    st.warning("🔒 Khu vực quản lý Spam cần xác minh. Vui lòng nhập Mã PIN Nhân viên (Staff).")
+    pin_staff_input = st.text_input("🔑 Nhập Mã PIN Staff (STAFF_PIN):", type="password")
+    if st.button("🔓 Xác nhận truy cập Staff"):
+      if pin_staff_input in [STAFF_PIN, ADMIN_PIN]:
+        st.session_state["staff_auth_ok"] = True
+        st.success("✅ Xác thực thành công!")
+        st.rerun()
+      else:
+        st.error("❌ Mã PIN Nhân viên không chính xác!")
+    st.stop()
+
+  # NỘI DUNG SAU KHÍ ĐÃ NHẬP ĐÚNG PIN STAFF
   conn = get_conn()
   rows = conn.execute("SELECT * FROM reports WHERE status = 'Spam/Từ chối' ORDER BY id DESC").fetchall()
   conn.close()
 
   if not rows:
-    st.success("Không có báo cáo spam nào.")
+    st.success("🎉 Không có báo cáo spam nào cần xử lý.")
   else:
-    with st.popover("🔥 Xóa sạch TẤT CẢ Spam"):
-      pin_all = st.text_input("Mã PIN Nhân Viên / Admin:", type="password", key="pin_spam_all")
-      if st.button("Xóa tất cả Spam", type="primary"):
-        if pin_all in [STAFF_PIN, ADMIN_PIN]:
-          delete_reports_by_ids([r["id"] for r in rows])
-          st.success("Đã xóa sạch!")
-          st.rerun()
-        else:
-          st.error("PIN sai!")
+    if st.button("🔥 Xóa sạch TẤT CẢ Spam", type="primary"):
+      delete_reports_by_ids([r["id"] for r in rows])
+      st.success("Đã xóa sạch toàn bộ báo cáo spam!")
+      st.rerun()
 
     st.markdown("---")
     for r in rows:
@@ -619,15 +683,10 @@ elif menu == "🗑️ Báo cáo Spam & Xóa":
         st.write(f"📍 **Vị trí:** {r['location']}")
         st.error(r["ai_result"])
 
-        with st.popover(f"🗑️ Xóa đơn #{r['id']}"):
-          pin_s = st.text_input("Mã PIN:", type="password", key=f"pin_s_{r['id']}")
-          if st.button("Xóa mục này", key=f"btn_s_{r['id']}"):
-            if pin_s in [STAFF_PIN, ADMIN_PIN]:
-              delete_reports_by_ids([r["id"]])
-              st.success("Đã xóa!")
-              st.rerun()
-            else:
-              st.error("PIN sai!")
+        if st.button(f"🗑️ Xóa đơn #{r['id']}", key=f"btn_s_{r['id']}"):
+          delete_reports_by_ids([r["id"]])
+          st.success(f"Đã xóa báo cáo #{r['id']}!")
+          st.rerun()
 
 # ------------------------------------------------------------
 # 6. RESET & CÀI ĐẶT AI (YÊU CẦU MÃ PIN ADMIN KHI VÀO)
@@ -659,7 +718,7 @@ elif menu == "⚙️ Reset & Cài đặt AI":
   st.markdown("---")
 
   st.subheader("🔄 Reset dữ liệu & Đếm Báo cáo về 1")
-  st.warning("⚠️ Hành động này sẽ xóa TOÀN BỘ báo cáo, hình ảnh và bảng xếp hạng tích điểm!")
+  st.warning("⚠️️ Hành động này sẽ xóa TOÀN BỘ báo cáo, hình ảnh và bảng xếp hạng tích điểm!")
 
   with st.popover("🚨 BẮT ĐẦU RESET HỆ THỐNG VỀ 1"):
     confirm_text = st.text_input("Nhập 'RESET' để xác nhận xóa:", key="txt_confirm_reset")
