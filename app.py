@@ -60,7 +60,6 @@ def init_db():
             ai_result TEXT DEFAULT '',
             ai_raw_json TEXT DEFAULT '',
             ai_analyzed INTEGER DEFAULT 0,
-            assigned_to TEXT DEFAULT '',
             cleanup_image_path TEXT DEFAULT '',
             cleanup_note TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -88,7 +87,6 @@ def migrate_db():
   init_db()
   add_column_if_missing("ai_raw_json", "TEXT", "''")
   add_column_if_missing("ai_analyzed", "INTEGER", "0")
-  add_column_if_missing("assigned_to", "TEXT", "''")
   add_column_if_missing("cleanup_image_path", "TEXT", "''")
   add_column_if_missing("cleanup_note", "TEXT", "''")
 
@@ -142,13 +140,15 @@ def prepare_image(image_path, max_side=1024, quality=82):
 
 
 def parse_ai_text(raw_input):
-  """Sửa triệt để lỗi 'dict' object has no attribute 'strip'"""
   if isinstance(raw_input, dict):
-    # Nếu AI trả về sẵn một dict
     return {
         "contains_waste": raw_input.get("contains_waste", True),
         "severity": raw_input.get("severity", "Trung bình"),
         "waste_type": raw_input.get("waste_type", "Rác sinh hoạt"),
+        "dispatch_plan": raw_input.get(
+            "dispatch_plan",
+            "Cần 2 công nhân thu gom thủ công và 1 xe đẩy rác.",
+        ),
     }
 
   text = str(raw_input or "").strip()
@@ -182,6 +182,7 @@ def parse_ai_text(raw_input):
       "contains_waste": not has_no_waste,
       "severity": "Nặng" if "NẶNG" in upper else "Trung bình",
       "waste_type": "Rác sinh hoạt",
+      "dispatch_plan": "Bố trí 2 công nhân và xe gom rác chuyên dụng.",
   }
 
 
@@ -193,19 +194,21 @@ def analyze_image_with_cloudflare(image_path):
     image_bytes = prepare_image(image_path)
     image_array = list(image_bytes)
 
+    # PROMPT TỰ ĐỘNG ĐIỀU PHỐI VẬT LỰC
     prompt = """
-TRẢ VỀ DUY NHẤT JSON (KHÔNG VIẾT LỜI DẪN, KHÔNG CHÀO HỎI):
+TRẢ VỀ DUY NHẤT JSON KHÔNG KÈM LỜI DẪN:
 {
   "contains_waste": true,
   "severity": "Nhẹ" hoặc "Trung bình" hoặc "Nặng",
-  "waste_type": "Rác sinh hoạt" hoặc "Xà bần" hoặc "Rác cồng kềnh"
+  "waste_type": "Rác sinh hoạt" hoặc "Xà bần/Đất đá" hoặc "Rác cồng kềnh",
+  "dispatch_plan": "Đề xuất chính xác trang thiết bị/nhân lực (Ví dụ: Cần 2 công nhân + xe đẩy rác HOẶC Cần 1 xe cuốc + 1 xe tải 5 tấn + 4 công nhân)"
 }
 """
 
     payload = {
         "prompt": prompt,
         "image": image_array,
-        "max_tokens": 150,
+        "max_tokens": 200,
         "temperature": 0.1,
     }
 
@@ -228,7 +231,6 @@ TRẢ VỀ DUY NHẤT JSON (KHÔNG VIẾT LỜI DẪN, KHÔNG CHÀO HỎI):
 
     result = data.get("result", {})
     raw_response = result.get("response", "") or result.get("text", "")
-
     parsed = parse_ai_text(raw_response)
 
     return {"success": True, "parsed": parsed, "raw": data}
@@ -255,12 +257,13 @@ def save_ai_result(report_id, analysis):
 
   status = "Đã duyệt" if is_waste else "Spam/Từ chối"
 
-  # NỔI BẬT: CHỈ HIỂN THỊ SIÊU NGẮN GỌN (SẠCH SẼ)
+  # TÓM TẮT SIÊU NGẮN KÈM TỰ ĐỘNG ĐIỀU PHỐI
   if is_waste:
     display_text = (
         f"🔴 **Phát hiện rác:** CÓ RÁC\n"
         f"🏷️ **Loại rác:** {parsed.get('waste_type', 'Rác hỗn hợp')}\n"
-        f"⚠️ **Mức độ:** {parsed.get('severity', 'Trung bình')}"
+        f"⚠️ **Mức độ:** {parsed.get('severity', 'Trung bình')}\n"
+        f"🚚 **AI Điều phối yêu cầu:** {parsed.get('dispatch_plan', 'Bố trí công nhân dọn dẹp.')}"
     )
   else:
     display_text = (
@@ -298,7 +301,8 @@ menu = st.sidebar.radio(
     [
         "📷 Gửi báo cáo",
         "📋 Điều phối & Quản lý",
-        "🧹 Đội dọn dẹp báo cáo",
+        "🧹 Đội dọn dẹp nhận nhiệm vụ",
+        "✅ Danh sách đã dọn",
         "🗑️ Báo cáo Spam & Xóa",
         "⚙️️ Cài đặt AI",
     ],
@@ -313,7 +317,7 @@ if menu == "📷 Gửi báo cáo":
   st.header("📷 Gửi báo cáo điểm rác")
 
   uploaded_file = st.file_uploader(
-      " Tải ảnh hiện trường:", type=["jpg", "jpeg", "png", "webp"]
+      "Tải ảnh hiện trường:", type=["jpg", "jpeg", "png", "webp"]
   )
 
   st.write("📍 **Chọn vị trí trên bản đồ:**")
@@ -358,17 +362,17 @@ if menu == "📷 Gửi báo cáo":
     st.success(f"✅ **Đã tiếp nhận báo cáo #{report_id}!**")
 
     if cloudflare_configured():
-      with st.spinner("🤖 **AI đang phân tích ảnh...**"):
+      with st.spinner("🤖 **AI đang phân tích & tự động điều phối...**"):
         analysis = analyze_image_with_cloudflare(image_path)
         save_ai_result(report_id, analysis)
 
     st.rerun()
 
 # ------------------------------------------------------------
-# 2. ĐIỀU PHỐI & QUẢN LÝ (PHÂN CÔNG & XÓA BÁO CÁO)
+# 2. ĐIỀU PHỐI & QUẢN LÝ (QUẢN TRỊ VIÊN)
 # ------------------------------------------------------------
 elif menu == "📋 Điều phối & Quản lý":
-  st.header("📋 Quản lý & Điều phối xử lý")
+  st.header("📋 Quản lý & Giám sát báo cáo")
 
   if st.text_input("🔐 Mã PIN Quản trị", type="password") != STAFF_PIN:
     st.warning("Vui lòng nhập mã PIN quản trị.")
@@ -381,65 +385,32 @@ elif menu == "📋 Điều phối & Quản lý":
   conn.close()
 
   if not rows:
-    st.info("Không có báo cáo hợp lệ nào.")
+    st.info("Không có báo cáo nào.")
   else:
-    st.subheader("🗑️ Xóa báo cáo hàng loạt")
     selected_to_delete = []
+    st.subheader("🗑️ Chọn báo cáo để xóa")
 
     for r in rows:
-      col_chk, col_info = st.columns([0.1, 0.9])
-      with col_chk:
-        if st.checkbox("", key=f"del_{r['id']}"):
+      c_chk, c_card = st.columns([0.08, 0.92])
+      with c_chk:
+        if st.checkbox("", key=f"chk_{r['id']}"):
           selected_to_delete.append(r["id"])
 
-      with col_info:
+      with c_card:
         badge = (
-            "🟢 ĐÃ DUYỆT"
+            "🟢 CẦN DỌN"
             if r["status"] == "Đã duyệt"
             else ("🧹 ĐANG DỌN" if r["status"] == "Đang dọn" else "✅ HOÀN THÀNH")
         )
-        with st.expander(
-            f"Báo cáo #{r['id']} — {r['location']} | {badge} | Đội:"
-            f" {r['assigned_to'] or 'Chưa giao'}"
-        ):
-          c1, c2 = st.columns([1, 1])
-          with c1:
+        with st.expander(f"Báo cáo #{r['id']} — {r['location']} | {badge}"):
+          col1, col2 = st.columns([1, 1])
+          with col1:
             if r["image_path"] and os.path.isfile(r["image_path"]):
               st.image(r["image_path"], use_container_width=True)
-          with c2:
+          with col2:
             st.write(f"📍 **Vị trí:** {r['location']}")
             st.write(f"📝 **Mô tả:** {r['description']}")
-            st.info(f"**Kết quả AI:**\n{r['ai_result']}")
-
-            # MỤC ĐIỀU PHỐI VÀ PHÂN CÔNG DỌN DẸP
-            st.markdown("---")
-            st.write("👷 **Phân công & Điều phối:**")
-            assigned_team = st.text_input(
-                "Tên Đội/Công nhân phụ trách:",
-                value=r["assigned_to"] or "",
-                key=f"team_{r['id']}",
-            )
-            new_status = st.selectbox(
-                "Cập nhật trạng thái:",
-                ["Đã duyệt", "Đang dọn", "Hoàn thành"],
-                index=["Đã duyệt", "Đang dọn", "Hoàn thành"].index(
-                    r["status"] if r["status"] in ["Đang dọn", "Hoàn thành"] else "Đã duyệt"
-                ),
-                key=f"st_{r['id']}",
-            )
-
-            if st.button("💾 Lưu điều phối", key=f"save_{r['id']}"):
-              conn = get_conn()
-              conn.execute(
-                  """
-                                UPDATE reports SET assigned_to = ?, status = ? WHERE id = ?
-                            """,
-                  (assigned_team, new_status, r["id"]),
-              )
-              conn.commit()
-              conn.close()
-              st.success("Đã cập nhật phân công!")
-              st.rerun()
+            st.info(f"**AI Tự động Điều phối:**\n{r['ai_result']}")
 
     if selected_to_delete and st.button(
         f"❌ Xóa {len(selected_to_delete)} báo cáo đã chọn", type="primary"
@@ -450,7 +421,10 @@ elif menu == "📋 Điều phối & Quản lý":
             "SELECT image_path FROM reports WHERE id = ?", (did,)
         ).fetchone()
         if row and row["image_path"] and os.path.isfile(row["image_path"]):
-          os.remove(row["image_path"])
+          try:
+            os.remove(row["image_path"])
+          except OSError:
+            pass
         conn.execute("DELETE FROM reports WHERE id = ?", (did,))
       conn.commit()
       conn.close()
@@ -458,42 +432,69 @@ elif menu == "📋 Điều phối & Quản lý":
       st.rerun()
 
 # ------------------------------------------------------------
-# 3. ĐỘI DỌN DẸP BÁO CÁO HOÀN THÀNH
+# 3. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (BẢO BẢO MÃ PIN + CHỌN BÁO CÁO)
 # ------------------------------------------------------------
-elif menu == "🧹 Đội dọn dẹp báo cáo":
-  st.header("🧹 Đội dọn dẹp báo cáo kết quả hiện trường")
+elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
+  st.header("🧹 Đội dọn dẹp tiếp nhận & Cập nhật")
+
+  # BỔ SUNG MÃ PIN KHÓA BẢO MẬT PHẦN DỌN DẸP
+  if st.text_input("🔐 Mã PIN Đội dọn dẹp", type="password") != STAFF_PIN:
+    st.warning("Vui lòng nhập mã PIN xác thực đội dọn dẹp.")
+    st.stop()
 
   conn = get_conn()
-  active_tasks = conn.execute(
+  pending_tasks = conn.execute(
       "SELECT * FROM reports WHERE status IN ('Đã duyệt', 'Đang dọn') ORDER BY"
       " id DESC"
   ).fetchall()
   conn.close()
 
-  if not active_tasks:
-    st.success("Hiện tại không có điểm rác nào cần dọn dẹp!")
+  if not pending_tasks:
+    st.success("🎉 Không có điểm rác nào cần xử lý lúc này!")
   else:
-    task_options = [
-        f"#{t['id']} - {t['location']} ({t['assigned_to'] or 'Chưa phân công'})"
-        for t in active_tasks
-    ]
-    selected_task_str = st.selectbox("Chọn điểm rác vừa dọn xong:", task_options)
-    task_id = int(selected_task_str.split(" - ")[0].replace("#", ""))
-
-    cleaned_file = st.file_uploader(
-        " Tải ảnh bằng chứng SẠCH RÁC sau khi dọn:",
-        type=["jpg", "jpeg", "png"],
+    st.subheader("1️⃣ Chọn báo cáo đảm nhận dọn dẹp:")
+    task_map = {
+        f"Báo cáo #{t['id']} - {t['location']} ({t['status']})": t
+        for t in pending_tasks
+    }
+    selected_task_label = st.selectbox(
+        "Danh sách điểm rác chờ xử lý:", list(task_map.keys())
     )
-    cleanup_note = st.text_area("Ghi chú thu gom (Xe gom, số bao rác...):")
+    current_task = task_map[selected_task_label]
 
-    if st.button("✅ Báo cáo đã dọn xong", type="primary"):
+    st.markdown("---")
+    st.subheader("2️⃣ Chi tiết yêu cầu vật lực AI điều phối:")
+    st.info(current_task["ai_result"])
+
+    if current_task["status"] == "Đã duyệt":
+      if st.button("✋ Đảm nhận điểm rác này (Chuyển sang Đang dọn)"):
+        conn = get_conn()
+        conn.execute(
+            "UPDATE reports SET status = 'Đang dọn' WHERE id = ?",
+            (current_task["id"],),
+        )
+        conn.commit()
+        conn.close()
+        st.success("Đã chuyển trạng thái sang ĐANG DỌN DẸP!")
+        st.rerun()
+
+    st.markdown("---")
+    st.subheader("3️⃣ Báo cáo hoàn thành (Tải ảnh chứng minh đã sạch):")
+    cleaned_file = st.file_uploader(
+        "Tải ảnh hiện trường ĐÃ SẠCH RÁC:", type=["jpg", "jpeg", "png"]
+    )
+    cleanup_note = st.text_area("Ghi chú thu gom (Số khối rác, xe gom...):")
+
+    if st.button("✅ Báo cáo dọn xong", type="primary"):
       if not cleaned_file:
         st.warning("Vui lòng tải ảnh bằng chứng đã dọn sạch!")
         st.stop()
 
       img = Image.open(cleaned_file).convert("RGB")
       timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-      c_path = os.path.join(CLEANUP_DIR, f"clean_{task_id}_{timestamp}.jpg")
+      c_path = os.path.join(
+          CLEANUP_DIR, f"clean_{current_task['id']}_{timestamp}.jpg"
+      )
       img.save(c_path, format="JPEG", quality=90)
 
       conn = get_conn()
@@ -503,19 +504,54 @@ elif menu == "🧹 Đội dọn dẹp báo cáo":
                 SET status = 'Hoàn thành', cleanup_image_path = ?, cleanup_note = ?
                 WHERE id = ?
             """,
-          (c_path, cleanup_note, task_id),
+          (c_path, cleanup_note, current_task["id"]),
       )
       conn.commit()
       conn.close()
 
-      st.success(f"🎉 Đã hoàn tất báo cáo dọn dẹp cho điểm #{task_id}!")
+      st.success(
+          f"🎉 Đã hoàn tất xử lý điểm rác #{current_task['id']} thành công!"
+      )
       st.rerun()
 
 # ------------------------------------------------------------
-# 4. QUẢN LÝ SPAM & XÓA
+# 4. DANH SÁCH BÁO CÁO ĐÃ DỌN (XEM LỊCH SỬ HOÀN THÀNH)
+# ------------------------------------------------------------
+elif menu == "✅ Danh sách đã dọn":
+  st.header("✅ Danh sách các điểm rác đã dọn sạch")
+
+  conn = get_conn()
+  completed = conn.execute(
+      "SELECT * FROM reports WHERE status = 'Hoàn thành' ORDER BY id DESC"
+  ).fetchall()
+  conn.close()
+
+  if not completed:
+    st.info("Chưa có báo cáo nào hoàn thành.")
+  else:
+    for c in completed:
+      with st.expander(f"✅ Báo cáo #{c['id']} — {c['location']} (Đã hoàn tất)"):
+        col1, col2 = st.columns(2)
+        with col1:
+          st.write("📷 **Ảnh hiện trạng rác ban đầu:**")
+          if c["image_path"] and os.path.isfile(c["image_path"]):
+            st.image(c["image_path"], use_container_width=True)
+        with col2:
+          st.write("✨ **Ảnh bằng chứng ĐÃ DỌN SẠCH:**")
+          if c["cleanup_image_path"] and os.path.isfile(
+              c["cleanup_image_path"]
+          ):
+            st.image(c["cleanup_image_path"], use_container_width=True)
+          else:
+            st.caption("Chưa có ảnh đối chiếu.")
+
+        st.write(f"📝 **Ghi chú dọn dẹp:** {c['cleanup_note'] or 'Không có'}")
+
+# ------------------------------------------------------------
+# 5. QUẢN LÝ SPAM & XÓA
 # ------------------------------------------------------------
 elif menu == "🗑️ Báo cáo Spam & Xóa":
-  st.header("🗑 Danh sách Spam / Từ chối")
+  st.header("🗑 Danh sách Báo cáo Spam")
 
   if st.text_input("🔐 Mã PIN Quản trị", type="password") != STAFF_PIN:
     st.warning("Vui lòng nhập mã PIN quản trị.")
@@ -530,15 +566,18 @@ elif menu == "🗑️ Báo cáo Spam & Xóa":
   if not rows:
     st.success("Không có báo cáo spam nào.")
   else:
-    if st.button("🔥 Xóa sạch tất cả Spam", type="primary"):
+    if st.button("🔥 Xóa sạch toàn bộ Spam", type="primary"):
       conn = get_conn()
       for r in rows:
         if r["image_path"] and os.path.isfile(r["image_path"]):
-          os.remove(r["image_path"])
+          try:
+            os.remove(r["image_path"])
+          except OSError:
+            pass
       conn.execute("DELETE FROM reports WHERE status = 'Spam/Từ chối'")
       conn.commit()
       conn.close()
-      st.success("Đã xóa sạch bộ nhớ Spam!")
+      st.success("Đã dọn dẹp sạch danh sách Spam!")
       st.rerun()
 
     for r in rows:
@@ -547,7 +586,7 @@ elif menu == "🗑️ Báo cáo Spam & Xóa":
         st.error(r["ai_result"])
 
 # ------------------------------------------------------------
-# 5. CÀI ĐẶT AI
+# 6. CÀI ĐẶT AI
 # ------------------------------------------------------------
 elif menu == "⚙️ Cài đặt AI":
   st.header("⚙️ Cấu hình Cloudflare AI")
@@ -556,6 +595,6 @@ elif menu == "⚙️ Cài đặt AI":
     st.warning("Nhập mã PIN để vào cài đặt.")
     st.stop()
 
-  if st.button("☁️️ Kích hoạt Meta License AI", type="primary"):
+  if st.button("☁ Kích hoạt Meta License AI", type="primary"):
     ok, msg = agree_to_meta_license()
     st.success(msg) if ok else st.error(msg)
