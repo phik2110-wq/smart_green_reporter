@@ -33,10 +33,15 @@ CF_ACCOUNT_ID = st.secrets.get("CLOUDFLARE_ACCOUNT_ID", os.getenv("CLOUDFLARE_AC
 CF_AUTH_TOKEN = st.secrets.get("CLOUDFLARE_AUTH_TOKEN", os.getenv("CLOUDFLARE_AUTH_TOKEN", ""))
 CF_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct"
 
-# CÁC MÃ PIN PHÂN QUYỀN (Nếu chưa cài trong Secrets sẽ lấy giá trị mặc định)
 ADMIN_PIN = str(st.secrets.get("ADMIN_PIN", os.getenv("ADMIN_PIN", "9999")))
 TEAM_PIN = str(st.secrets.get("TEAM_PIN", os.getenv("TEAM_PIN", "5555")))
 STAFF_PIN = str(st.secrets.get("STAFF_PIN", os.getenv("STAFF_PIN", "1234")))
+
+# TẠO SESSION STATE BẢO MẬT TRUY CẬP TỪNG MỤC
+if "team_authenticated" not in st.session_state:
+  st.session_state.team_authenticated = False
+if "admin_authenticated" not in st.session_state:
+  st.session_state.admin_authenticated = False
 
 # ============================================================
 # CƠ SỞ DỮ LIỆU SQLITE3
@@ -226,7 +231,7 @@ TRẢ VỀ DUY NHẤT JSON KHÔNG KÈM LỜI DẪN:
   "contains_waste": true,
   "severity": "Nhẹ" hoặc "Trung bình" hoặc "Nặng",
   "waste_type": "Rác sinh hoạt" hoặc "Xà bần/Đất đá" hoặc "Rác cồng kềnh",
-  "dispatch_plan": "Đề xuất chính xác trang thiết bị/nhân lực (Ví dụ: Cần 2 công nhân + xe đẩy rác HOẶC Cần 1 xe cuốc + 1 xe tải 5 tấn + 4 công nhân)"
+  "dispatch_plan": "Đề xuất chính xác lực lượng và vật dụng cần thiết (Ví dụ: Cần 2 công nhân + xe đẩy rác HOẶC Cần 1 xe cuốc + 1 xe tải 5 tấn + 4 công nhân)"
 }
 """
 
@@ -286,7 +291,7 @@ def save_ai_result(report_id, analysis):
         f"🔴 **Phát hiện rác:** CÓ RÁC\n"
         f"🏷️ **Loại rác:** {parsed.get('waste_type', 'Rác hỗn hợp')}\n"
         f"⚠️ **Mức độ:** {parsed.get('severity', 'Trung bình')}\n"
-        f"🚚 **AI Điều phối vật lực:** {parsed.get('dispatch_plan', 'Bố trí công nhân dọn dẹp.')}"
+        f"🚚 **AI Điều phối lực lượng và vật dụng:** {parsed.get('dispatch_plan', 'Bố trí công nhân dọn dẹp.')}"
     )
   else:
     display_text = (
@@ -314,7 +319,7 @@ def save_ai_result(report_id, analysis):
   conn.close()
 
 # ============================================================
-# GIAO DIỆN CHÍNH (AI CŨNG CÓ THỂ TRUY CẬP TRỰC TIẾP)
+# GIAO DIỆN CHÍNH
 # ============================================================
 
 st.sidebar.title("🌿 Urban GreenEye")
@@ -326,14 +331,14 @@ menu = st.sidebar.radio(
         "✅ Danh sách đã dọn",
         "🏆 Bảng xếp hạng tích điểm",
         "🗑️ Báo cáo Spam & Xóa",
-        "⚙️️ Reset & Cài đặt AI",
+        "⚙️ Reset & Cài đặt AI",
     ],
 )
 
 st.title("🌿 Urban GreenEye AI")
 
 # ------------------------------------------------------------
-# 1. GỬI BÁO CÁO (MỌI NGƯỜI DÙNG CÓ THỂ BÁO CÁO TỰ DO)
+# 1. GỬI BÁO CÁO (MỌI NGƯỜI TRUY CẬP TỰ DO)
 # ------------------------------------------------------------
 if menu == "📷 Gửi báo cáo":
   st.header("📷 Gửi báo cáo điểm rác")
@@ -384,7 +389,7 @@ if menu == "📷 Gửi báo cáo":
     conn.close()
 
     if cloudflare_configured():
-      with st.spinner("🤖 **AI đang phân tích, duyệt báo cáo & điều phối vật lực...**"):
+      with st.spinner("🤖 **AI đang phân tích, duyệt báo cáo & điều phối lực lượng và vật dụng...**"):
         analysis = analyze_image_with_cloudflare(image_path)
         save_ai_result(report_id, analysis)
 
@@ -392,10 +397,27 @@ if menu == "📷 Gửi báo cáo":
     st.rerun()
 
 # ------------------------------------------------------------
-# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (YÊU CẦU MÃ PIN KHI BÁO CÁO DỌN XONG)
+# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (YÊU CẦU MÃ PIN NGAY KHI VÀO MỤC)
 # ------------------------------------------------------------
 elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
   st.header("🧹 Đội dọn dẹp tiếp nhận & Báo cáo kết quả")
+
+  if not st.session_state.team_authenticated:
+    st.info("🔒 Mục này dành riêng cho Đội dọn dẹp. Vui lòng nhập Mã PIN để truy cập.")
+    pin_input = st.text_input("🔑 Nhập Mã PIN Đội dọn dẹp (TEAM_PIN):", type="password")
+    if st.button("🔓 Xác nhận truy cập"):
+      if pin_input in [TEAM_PIN, ADMIN_PIN]:
+        st.session_state.team_authenticated = True
+        st.success("✅ Xác thực thành công!")
+        st.rerun()
+      else:
+        st.error("❌ Mã PIN không chính xác!")
+    st.stop()
+
+  # NỘI DUNG SAU KHÍ ĐÃ NHẬP ĐÚNG PIN
+  if st.button("🔒 Đăng xuất mục này"):
+    st.session_state.team_authenticated = False
+    st.rerun()
 
   conn = get_conn()
   pending_tasks = conn.execute(
@@ -412,7 +434,7 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
     current_task = task_map[selected_task_label]
 
     st.markdown("---")
-    st.subheader("2️⃣ Chi tiết yêu cầu vật lực AI điều phối:")
+    st.subheader("2️⃣ Chi tiết yêu cầu lực lượng và vật dụng AI điều phối:")
     col_img, col_info = st.columns([1, 1])
     with col_img:
       if current_task["image_path"] and os.path.isfile(current_task["image_path"]):
@@ -443,18 +465,7 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
     cleaned_file = st.file_uploader("Tải ảnh ĐÃ DỌN SẠCH RÁC:", type=["jpg", "jpeg", "png"])
     cleanup_note = st.text_area("Ghi chú thu gom (Khối lượng rác, xe chở...):")
 
-    # BẮT BỘC NHẬP MÃ PIN ĐỘI DỌN DẸP Ở BƯỚC NÀY
-    input_team_pin = st.text_input("🔐 Nhập Mã PIN Xác Nhận Dọn Dẹp (TEAM_PIN):", type="password")
-
     if st.button("✅ Báo cáo dọn xong & Tích điểm", type="primary"):
-      if not input_team_pin:
-        st.warning("⚠️ Vui lòng nhập Mã PIN Xác Nhận!")
-        st.stop()
-
-      if input_team_pin not in [TEAM_PIN, ADMIN_PIN]:
-        st.error("❌ Mã PIN Đội dọn dẹp không chính xác!")
-        st.stop()
-
       if not cleaned_file or not team_name.strip():
         st.warning("Vui lòng nhập Tên đội và tải ảnh chứng minh đã dọn sạch!")
         st.stop()
@@ -483,7 +494,6 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
       st.success(f"🎉 Hoàn tất điểm rác #{current_task['id']}! Cộng +10đ cho '{current_task['reporter_name']}' và +20đ cho Đội '{team_name}'!")
       st.rerun()
 
-    # XÓA ĐƠN YÊU CẦU STAFF_PIN HOẶC ADMIN_PIN
     with st.popover(f"🗑️ Xóa báo cáo #{current_task['id']}"):
       pin_del_task = st.text_input("Nhập PIN Nhân Viên / Admin:", type="password", key="pin_task")
       if st.button("Xác nhận xóa"):
@@ -553,7 +563,7 @@ elif menu == "✅ Danh sách đã dọn":
             st.error("PIN sai!")
 
 # ------------------------------------------------------------
-# 4. BẢNG XẾP HẠNG TÍCH ĐIỂM (CÔNG KHAI AI CŨNG CÓ THỂ XEM)
+# 4. BẢNG XẾP HẠNG TÍCH ĐIỂM
 # ------------------------------------------------------------
 elif menu == "🏆 Bảng xếp hạng tích điểm":
   st.header("🏆 Bảng Xếp Hạng Đóng Góp Môi Trường")
@@ -621,20 +631,53 @@ elif menu == "🗑️ Báo cáo Spam & Xóa":
               st.error("PIN sai!")
 
 # ------------------------------------------------------------
-# 6. RESET & CÀI ĐẶT AI (CHỈ ADMIN MỚI ĐƯỢC RESET)
+# 6. RESET & CÀI ĐẶT AI (BẢO MẬT BẰNG ADMIN_PIN VỚI GIAO DIỆN CẤU HÌNH RÕ RÀNG)
 # ------------------------------------------------------------
 elif menu == "⚙️ Reset & Cài đặt AI":
   st.header("⚙️ Cấu hình Hệ thống & AI")
 
-  st.subheader("🔄 Reset đếm Báo cáo & Điểm số về 1")
-  st.warning("⚠️ Hành động này sẽ xóa TOÀN BỘ dữ liệu báo cáo, ảnh và bảng tích điểm! Chỉ Quản trị viên mới có quyền.")
-
-  with st.popover("🚨 BẮT ĐẦU RESET HỆ THỐNG VỀ 1"):
-    pin_reset = st.text_input("Nhập Mã PIN ADMIN (ADMIN_PIN) để RESET:", type="password", key="pin_reset_all")
-    if st.button("💥 XÁC NHẬN RESET TOÀN BỘ VỀ 1", type="primary", key="btn_reset_confirm"):
-      if pin_reset == ADMIN_PIN:
-        reset_database_to_one()
-        st.success("✅ Đã reset hệ thống! Báo cáo tiếp theo sẽ bắt đầu từ #1.")
+  # XÁC THỰC MÃ PIN ADMIN NGAY KHI CHỌN NÚT TRÒN
+  if not st.session_state.admin_authenticated:
+    st.warning("🔒 Khu vực này chỉ dành cho Quản trị viên (Admin). Vui lòng nhập Mã PIN ADMIN.")
+    pin_admin_input = st.text_input("🔑 Nhập Mã PIN ADMIN (ADMIN_PIN):", type="password")
+    if st.button("🔓 Xác nhận đăng nhập Admin"):
+      if pin_admin_input == ADMIN_PIN:
+        st.session_state.admin_authenticated = True
+        st.success("✅ Xác thực thành công!")
         st.rerun()
       else:
-        st.error("Mã PIN ADMIN không chính xác!")
+        st.error("❌ Mã PIN ADMIN không chính xác!")
+    st.stop()
+
+  # NỘI DUNG TRANG CÀI ĐẶT SAU KHÍ ĐÃ ĐĂNG NHẬP THÀNH CÔNG
+  st.success("🔑 Bạn đang đăng nhập dưới quyền **Quản trị viên (Admin)**")
+  if st.button("🔒 Đăng xuất Admin"):
+    st.session_state.admin_authenticated = False
+    st.rerun()
+
+  st.markdown("---")
+
+  # HIỂN THỊ THÔNG TIN CẤU HÌNH CLOUDFLARE AI
+  st.subheader("🤖 Trạng thái kết nối Cloudflare AI")
+  if cloudflare_configured():
+    st.success("✅ Cloudflare AI đã kết nối thành công!")
+    st.write(f"• **Account ID:** `{CF_ACCOUNT_ID[:6]}...{CF_ACCOUNT_ID[-4:] if len(CF_ACCOUNT_ID) > 10 else ''}`")
+    st.write(f"• **Model:** `{CF_MODEL}`")
+  else:
+    st.error("❌ Chưa kết nối Cloudflare AI. Vui lòng bổ sung `CLOUDFLARE_ACCOUNT_ID` và `CLOUDFLARE_AUTH_TOKEN` vào phần Secrets trên Streamlit Cloud.")
+
+  st.markdown("---")
+
+  # MỤC RESET DATABASE
+  st.subheader("🔄 Reset dữ liệu & Đếm Báo cáo về 1")
+  st.warning("⚠️ Hành động này sẽ xóa TOÀN BỘ báo cáo, hình ảnh và bảng xếp hạng tích điểm!")
+
+  with st.popover("🚨 BẮT ĐẦU RESET HỆ THỐNG VỀ 1"):
+    confirm_text = st.text_input("Nhập 'RESET' để xác nhận xóa:", key="txt_confirm_reset")
+    if st.button("💥 XÁC NHẬN RESET TOÀN BỘ VỀ 1", type="primary", key="btn_reset_confirm"):
+      if confirm_text.strip().upper() == "RESET":
+        reset_database_to_one()
+        st.success("✅ Đã reset toàn bộ hệ thống! Báo cáo tiếp theo sẽ tính từ #1.")
+        st.rerun()
+      else:
+        st.error("Bạn nhập từ xác nhận chưa chính xác!")
