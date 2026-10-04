@@ -625,53 +625,43 @@ if menu == "📷 Gửi báo cáo":
     conn.close()
 
     if cloudflare_configured():
+        with st.spinner("🤖 AI Vision đang tự động kiểm định hình ảnh..."):
+            analysis = analyze_image_with_cloudflare(image_path)
+            success = save_ai_result(report_id, analysis)
 
-    with st.spinner("🤖 AI Vision đang tự động kiểm định hình ảnh..."):
+        if success:
+            st.success(
+                f"✅ Đã gửi và AI đã kiểm định xong Báo cáo #{report_id}!"
+            )
+        else:
+            st.warning(
+                f"⚠️ Báo cáo #{report_id} đã được lưu, "
+                "nhưng AI chưa phân tích được. Báo cáo sẽ được giữ lại."
+            )
 
-        analysis = analyze_image_with_cloudflare(
-            image_path
-        )
-
-        success = save_ai_result(
-            report_id,
-            analysis
-        )
-
-    if success:
-        st.success(
-            f"✅ Đã gửi và AI đã kiểm định xong Báo cáo #{report_id}!"
-        )
     else:
+        conn = get_conn()
+
+        conn.execute("""
+            UPDATE reports
+            SET status = ?,
+                ai_result = ?
+            WHERE id = ?
+        """, (
+            "Chờ AI",
+            "⏳ Chờ cấu hình Cloudflare AI.",
+            report_id
+        ))
+
+        conn.commit()
+        conn.close()
+
         st.warning(
-            f"⚠️ Báo cáo #{report_id} đã được lưu, "
-            "nhưng AI chưa phân tích được. Báo cáo sẽ được giữ lại."
+            f"⚠️ Báo cáo #{report_id} đã được lưu nhưng "
+            "Cloudflare AI chưa được cấu hình."
         )
 
-else:
-
-    conn = get_conn()
-
-    conn.execute("""
-        UPDATE reports
-        SET status = ?,
-            ai_result = ?
-        WHERE id = ?
-    """, (
-        "Chờ AI",
-        "⏳ Chờ cấu hình Cloudflare AI.",
-        report_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-    st.warning(
-        f"⚠️ Báo cáo #{report_id} đã được lưu nhưng "
-        "Cloudflare AI chưa được cấu hình."
-    )
-
-st.rerun()
-
+    st.rerun()
 # ------------------------------------------------------------
 # 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ
 # ------------------------------------------------------------
