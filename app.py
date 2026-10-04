@@ -54,6 +54,24 @@ TEAM_PIN = get_setting("TEAM_PIN", "1234")
 STAFF_PIN = get_setting("STAFF_PIN", "1234")
 
 
+def unlock_with_pin(pin: str, session_key: str) -> bool:
+    """Admin PIN có toàn quyền; PIN riêng chỉ mở đúng khu vực."""
+    if pin == ADMIN_PIN:
+        st.session_state["admin_full_access"] = True
+        st.session_state[session_key] = True
+        return True
+    if session_key == "admin_unlocked":
+        ok = pin == ADMIN_PIN
+    elif session_key == "team_unlocked":
+        ok = pin == TEAM_PIN
+    elif session_key == "staff_unlocked":
+        ok = pin == STAFF_PIN
+    else:
+        ok = False
+    st.session_state[session_key] = ok
+    return ok
+
+
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(CLEANUP_DIR, exist_ok=True)
 
@@ -347,6 +365,36 @@ div[data-testid="stFileUploader"] {
     border-radius: 16px;
     padding: 8px;
     background: #f7fcf8;
+}
+
+/* File uploader: nền tối và tất cả chữ bên trong màu trắng */
+div[data-testid="stFileUploader"] button,
+div[data-testid="stFileUploader"] button *,
+div[data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"],
+div[data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] *,
+div[data-testid="stFileUploader"] small,
+div[data-testid="stFileUploader"] span,
+div[data-testid="stFileUploader"] p {
+    color: #ffffff !important;
+}
+
+div[data-testid="stFileUploader"] button {
+    background: #252631 !important;
+    border: 1px solid #4a4d5b !important;
+}
+
+div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] *,
+div[data-testid="stFileUploader"] section * {
+    color: #ffffff !important;
+}
+
+/* Không để rule màu đen chung đè lên chữ nhập trong các ô tối */
+.stApp input,
+.stApp textarea,
+.stApp input:focus,
+.stApp textarea:focus {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
 }
 
 .stButton > button {
@@ -652,19 +700,63 @@ def image_to_data_uri(image_bytes: bytes):
 
 
 def extract_json_object(text: str):
-    text = text.strip()
+    """Parse JSON ngay cả khi model bọc trong markdown/code fence."""
+    if isinstance(text, dict):
+        return text
 
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
+    text = str(text or "").strip()
+    candidates = [text]
 
-    match = re.search(r"\{.*\}", text, flags=re.S)
-    if not match:
-        raise ValueError("AI không trả về JSON hợp lệ.")
+    # Loại code fence ```json ... ```
+    cleaned = re.sub(r"```(?:json)?\s*", "", text, flags=re.I)
+    cleaned = cleaned.replace("```", "").strip()
+    candidates.append(cleaned)
 
-    return json.loads(match.group(0))
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+            if isinstance(value, dict):
+                return value
+        except Exception:
+            pass
 
+    # Tìm object cân bằng ngoặc thay vì regex greedy.
+    depth = 0
+    in_string = False
+    escaped = False
+    start_pos = None
+    for i, ch in enumerate(cleaned):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == '{':
+            if depth == 0:
+                start_pos = i
+            depth += 1
+        elif ch == '}':
+            if depth:
+                depth -= 1
+                if depth == 0 and start_pos is not None:
+                    chunk = cleaned[start_pos:i + 1]
+                    try:
+                        value = json.loads(chunk)
+                        if isinstance(value, dict):
+                            return value
+                    except Exception:
+                        pass
+                    start_pos = None
+
+    raise ValueError(
+        "AI đã trả về nội dung nhưng không đúng JSON. "
+        f"Phản hồi nhận được: {text[:500]}"
+    )
 
 def normalize_bool(value):
     if isinstance(value, bool):
@@ -681,38 +773,7 @@ def normalize_bool(value):
     return False
 
 
-def analyze_image_with_cloudflare(image_bytes: bytes):
-    if not cloudflare_configured():
-        raise RuntimeError(
-            "Chưa cấu hình CLOUDFLARE_ACCOUNT_ID và "
-            "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
-        )
-
-    prompt = """
-Bạn là AI chuyên phân tích ảnh phản ánh rác thải đô thị.
-
-Kiểm tra ảnh có thực sự có rác thải nhìn thấy rõ hay không.
-- Chân dung, selfie, ảnh người, ảnh nhóm, ảnh thẻ, khuôn mặt: không phải rác.
-- Người nhỏ ở nền ảnh không phải rác.
-- Không thấy rác rõ ràng hoặc không chắc chắn: contains_waste=false.
-- Không suy đoán vật thể không nhìn thấy.
-- dispatch_plan phải do AI tự tạo dựa trên rác thực tế; nếu không có rác thì để chuỗi rỗng.
-- Trả lời hoàn toàn bằng tiếng Việt.
-- CHỈ trả về JSON, không markdown.
-
-JSON bắt buộc:
-{
-  "contains_waste": true,
-  "is_waste_amount_sufficient": true,
-  "natural_report": "Nhận xét tự nhiên bằng tiếng Việt.",
-  "waste_type": "Loại rác nếu có.",
-  "severity": "Mức độ nếu có.",
-  "visual_evidence": "Những gì thực sự nhìn thấy.",
-  "spam_reason": "Lý do không hợp lệ nếu không có rác.",
-  "dispatch_plan": "Phương án xử lý do AI tự đề xuất nếu có rác."
-}
-"""
-
+def _cloudflare_request(prompt: str, image_bytes: bytes):
     payload = {
         "prompt": prompt,
         "image": image_to_data_uri(image_bytes),
@@ -739,20 +800,40 @@ JSON bắt buộc:
         data = {}
 
     if not response.ok or not data.get("success"):
-        detail = json.dumps(data, ensure_ascii=False)[:2500] if data else response.text[:2500]
-        raise RuntimeError(f"Cloudflare HTTP {response.status_code}: {detail}")
+        detail = (
+            json.dumps(data, ensure_ascii=False)[:2500]
+            if data else response.text[:2500]
+        )
+        raise RuntimeError(
+            f"Cloudflare HTTP {response.status_code}: {detail}"
+        )
 
     result = data.get("result", {})
     if isinstance(result, dict):
-        text = result.get("response") or result.get("text") or result.get("output")
+        text = (
+            result.get("response")
+            or result.get("text")
+            or result.get("output")
+            or result.get("generated_text")
+        )
         if text is None:
             text = json.dumps(result, ensure_ascii=False)
     else:
         text = str(result)
 
-    parsed = extract_json_object(text)
-    parsed["contains_waste"] = normalize_bool(parsed.get("contains_waste"))
-    parsed["is_waste_amount_sufficient"] = normalize_bool(parsed.get("is_waste_amount_sufficient"))
+    return str(text), data
+
+
+def _normalize_ai_result(parsed):
+    if not isinstance(parsed, dict):
+        raise ValueError("Kết quả AI không phải object JSON.")
+
+    parsed["contains_waste"] = normalize_bool(
+        parsed.get("contains_waste")
+    )
+    parsed["is_waste_amount_sufficient"] = normalize_bool(
+        parsed.get("is_waste_amount_sufficient")
+    )
 
     for key in [
         "natural_report", "waste_type", "severity",
@@ -760,7 +841,74 @@ JSON bắt buộc:
     ]:
         parsed[key] = str(parsed.get(key, "") or "").strip()
 
-    return parsed, data
+    return parsed
+
+
+def analyze_image_with_cloudflare(image_bytes: bytes):
+    if not cloudflare_configured():
+        raise RuntimeError(
+            "Chưa cấu hình CLOUDFLARE_ACCOUNT_ID và "
+            "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
+        )
+
+    prompt = """
+Bạn là AI kiểm duyệt ảnh rác thải đô thị.
+
+Hãy nhìn trực tiếp vào ảnh và quyết định có rác thải nhìn thấy rõ hay không.
+Chân dung, selfie, ảnh người, ảnh nhóm, ảnh thẻ hoặc khuôn mặt KHÔNG phải rác.
+Nếu không thấy rác rõ ràng hoặc không chắc chắn thì trả contains_waste=false.
+Không được suy đoán vật thể không nhìn thấy.
+
+QUAN TRỌNG: Phản hồi phải là MỘT JSON OBJECT DUY NHẤT.
+Không markdown, không ```json, không lời mở đầu, không lời kết.
+Ký tự đầu tiên phải là { và ký tự cuối cùng phải là }.
+Dùng đúng 8 khóa dưới đây.
+
+{
+  "contains_waste": false,
+  "is_waste_amount_sufficient": false,
+  "natural_report": "Nhận xét tự nhiên bằng tiếng Việt.",
+  "waste_type": "Loại rác nếu có, nếu không thì chuỗi rỗng.",
+  "severity": "Mức độ nếu có, nếu không thì chuỗi rỗng.",
+  "visual_evidence": "Những gì thực sự nhìn thấy trong ảnh.",
+  "spam_reason": "Lý do không hợp lệ nếu không có rác, nếu hợp lệ thì chuỗi rỗng.",
+  "dispatch_plan": "Phương án xử lý do AI tự đề xuất nếu có rác, nếu không thì chuỗi rỗng."
+}
+
+Không dùng câu xử lý cố định. dispatch_plan phải dựa trên đúng những gì nhìn thấy.
+"""
+
+    text, raw_data = _cloudflare_request(prompt, image_bytes)
+
+    try:
+        parsed = extract_json_object(text)
+        return _normalize_ai_result(parsed), raw_data
+    except Exception as first_error:
+        # Model đôi khi trả lời bằng văn bản dù đã yêu cầu JSON. Gửi lại một
+        # lần với prompt cực ngắn để chuẩn hóa, thay vì làm mất báo cáo.
+        repair_prompt = f"""
+Hãy phân tích lại chính ảnh này. Chỉ trả về JSON object hợp lệ, không markdown.
+Không thấy rác rõ ràng hoặc không chắc chắn => contains_waste=false.
+Người/chân dung/selfie không phải rác.
+
+JSON bắt buộc có đúng các khóa:
+contains_waste, is_waste_amount_sufficient, natural_report, waste_type, severity, visual_evidence, spam_reason, dispatch_plan.
+
+Lần trả lời trước (chỉ để tham khảo, không tin tuyệt đối):
+{text[:1200]}
+"""
+
+        try:
+            repaired_text, repaired_raw = _cloudflare_request(
+                repair_prompt, image_bytes
+            )
+            parsed = extract_json_object(repaired_text)
+            return _normalize_ai_result(parsed), repaired_raw
+        except Exception as second_error:
+            raise RuntimeError(
+                "AI đã nhận được ảnh nhưng không trả về JSON hợp lệ sau 2 lần thử. "
+                f"Lần 1: {first_error}; Lần 2: {second_error}"
+            ) from second_error
 
 
 # =========================================================
@@ -1240,13 +1388,17 @@ def page_cleanup_team():
         key="team_pin_input",
     )
     if st.button("→ Vào khu vực đội dọn dẹp", key="team_login", use_container_width=True):
-        st.session_state["team_unlocked"] = (pin == TEAM_PIN)
-        if pin != TEAM_PIN:
+        if unlock_with_pin(pin, "team_unlocked"):
+            st.success("Đã mở quyền truy cập.")
+        else:
             st.error("Mã PIN không đúng.")
 
-    if not st.session_state.get("team_unlocked", False):
+    if not st.session_state.get("team_unlocked", False) and not st.session_state.get("admin_full_access", False):
         st.info("Nhập mã PIN rồi bấm nút để vào.")
         return
+
+    if st.session_state.get("admin_full_access", False):
+        st.caption("🔐 Bạn đang truy cập bằng quyền quản trị toàn quyền.")
 
     team_name = st.text_input(
         "Tên đội / thành viên",
@@ -1509,13 +1661,17 @@ def page_spam():
         key="staff_pin_input",
     )
     if st.button("→ Vào khu vực Spam", key="staff_login", use_container_width=True):
-        st.session_state["staff_unlocked"] = (pin == STAFF_PIN)
-        if pin != STAFF_PIN:
+        if unlock_with_pin(pin, "staff_unlocked"):
+            st.success("Đã mở quyền truy cập.")
+        else:
             st.error("Mã PIN không đúng.")
 
-    if not st.session_state.get("staff_unlocked", False):
+    if not st.session_state.get("staff_unlocked", False) and not st.session_state.get("admin_full_access", False):
         st.info("Nhập PIN rồi bấm nút để vào.")
         return
+
+    if st.session_state.get("admin_full_access", False):
+        st.caption("🔐 Bạn đang truy cập bằng quyền quản trị toàn quyền.")
 
     rows = get_reports("Spam/Từ chối")
 
@@ -1587,13 +1743,16 @@ def page_admin():
         key="admin_pin_input",
     )
     if st.button("→ Vào khu vực quản trị", key="admin_login", use_container_width=True):
-        st.session_state["admin_unlocked"] = (pin == ADMIN_PIN)
-        if pin != ADMIN_PIN:
+        if unlock_with_pin(pin, "admin_unlocked"):
+            st.success("Đã mở toàn quyền quản trị.")
+        else:
             st.error("Mã PIN không đúng.")
 
-    if not st.session_state.get("admin_unlocked", False):
+    if not st.session_state.get("admin_unlocked", False) and not st.session_state.get("admin_full_access", False):
         st.info("Nhập PIN rồi bấm nút để vào.")
         return
+
+    st.success("🔐 Quyền quản trị: TOÀN QUYỀN")
 
     if cloudflare_configured():
         st.success("🟢 Cloudflare Workers AI đã được cấu hình.")
