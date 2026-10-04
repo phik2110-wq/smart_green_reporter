@@ -21,33 +21,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ------------------------------------------------------------
-# TRANG TRÍ GIAO DIỆN TƯƠI XANH (CUSTOM CSS)
-# ------------------------------------------------------------
 st.markdown(
     """
     <style>
-    /* Nền chính và font chữ */
-    .stApp {
-        background-color: #f4f9f4;
-    }
-    
-    /* Sidebar xanh tươi mát */
+    .stApp { background-color: #f4f9f4; }
     [data-testid="stSidebar"] {
         background-color: #e8f5e9 !important;
         border-right: 2px solid #c8e6c9;
     }
-    
-    /* Tiêu đề chính */
-    h1 {
-        color: #1b5e20 !important;
-        font-weight: 700 !important;
-    }
-    h2, h3 {
-        color: #2e7d32 !important;
-    }
-    
-    /* Tùy chỉnh các nút bấm */
+    h1 { color: #1b5e20 !important; font-weight: 700 !important; }
+    h2, h3 { color: #2e7d32 !important; }
     .stButton>button {
         background-color: #4caf50 !important;
         color: white !important;
@@ -61,18 +44,12 @@ st.markdown(
         transform: translateY(-2px);
         box-shadow: 0 4px 8px rgba(0,0,0,0.15);
     }
-    
-    /* Khung Expander & Cards */
     .streamlit-expanderHeader {
         background-color: #ffffff !important;
         border-radius: 8px !important;
         border: 1px solid #c8e6c9 !important;
     }
-    
-    /* Thông báo Info / Success / Warning */
-    .stAlert {
-        border-radius: 10px !important;
-    }
+    .stAlert { border-radius: 10px !important; }
     </style>
 """,
     unsafe_allow_html=True,
@@ -84,7 +61,6 @@ CLEANUP_DIR = "cleanup_images"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(CLEANUP_DIR, exist_ok=True)
 
-# LẤY THÔNG TIN API & MÃ PIN TỪ STREAMLIT SECRETS
 CF_ACCOUNT_ID = st.secrets.get(
     "CLOUDFLARE_ACCOUNT_ID", os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 )
@@ -168,6 +144,7 @@ def migrate_db():
 
 
 migrate_db()
+
 
 # ============================================================
 # HÀM XỬ LÝ ĐIỂM SỐ & DATABASE
@@ -268,13 +245,10 @@ def prepare_image(image_path, max_side=1024, quality=82):
 def parse_ai_text(raw_input):
   if isinstance(raw_input, dict):
     return {
-        "contains_waste": raw_input.get("contains_waste", True),
-        "severity": raw_input.get("severity", "Trung bình"),
-        "waste_type": raw_input.get("waste_type", "Rác sinh hoạt"),
-        "dispatch_plan": raw_input.get(
-            "dispatch_plan",
-            "Cần 2 công nhân thu gom thủ công và 1 xe đẩy rác.",
-        ),
+        "contains_waste": raw_input.get("contains_waste", False),
+        "severity": raw_input.get("severity", "Không xác định"),
+        "waste_type": raw_input.get("waste_type", "Chưa phân loại"),
+        "dispatch_plan": raw_input.get("dispatch_plan", "Không có"),
     }
 
   text = str(raw_input or "").strip()
@@ -293,21 +267,18 @@ def parse_ai_text(raw_input):
       pass
 
   upper = text.upper()
-  has_no_waste = any(
-      k in upper
-      for k in [
-          "KHÔNG PHẢI RÁC",
-          "KHÔNG CÓ RÁC",
-          "KHONG PHAI RAC",
-          "NO WASTE",
-          "CLEAN",
-          "PERSON",
-          "FACE",
-      ]
+  # Mặc định kiểm tra chặt chẽ ảnh mặt người
+  is_waste = (
+      "TRUE" in upper
+      and "CONTAINS_WASTE\": TRUE" in upper
+      and not any(
+          k in upper
+          for k in ["FACE", "PORTRAIT", "PERSON", "KHÔNG PHẢI RÁC", "NO WASTE"]
+      )
   )
 
   return {
-      "contains_waste": not has_no_waste,
+      "contains_waste": is_waste,
       "severity": "Nặng" if "NẶNG" in upper else "Trung bình",
       "waste_type": "Rác sinh hoạt",
       "dispatch_plan": "Bố trí 2 công nhân và xe gom rác chuyên dụng.",
@@ -322,32 +293,27 @@ def analyze_image_with_cloudflare(image_path):
     image_bytes = prepare_image(image_path)
     image_array = list(image_bytes)
 
-    # Prompt nâng cấp phân tích kỹ lưỡng & phân bố lực lượng tự nhiên
     prompt = """
-Bạn là AI chuyên gia kiểm định môi trường đô thị. Hãy phân tích hình ảnh được cung cấp:
+You are an environmental vision checker. Analyze the image carefully.
 
-RÀNG BUỘC KIỂM ĐỊNH TỰ ĐỘNG:
-- Nếu hình ảnh là mặt người, ảnh chân dung cá nhân, vật dụng cá nhân, hoặc KHÔNG PHẢI BÃI RÁC/ĐIỂM Ô NHIỄM THỰC TẾ -> BẮT BUỘC đặt "contains_waste": false.
-- Nếu là bãi rác, điểm tập kết rác thải tự phát hoặc ô nhiễm ngoài trời -> Đặt "contains_waste": true.
+CRITICAL GUARDRAIL RULES:
+1. If the image shows a HUMAN FACE, PORTRAIT, SELFIE, PERSON, CLOTHES ONLY, OR CLEAN ENVIRONMENT:
+   Set "contains_waste": false.
+2. ONLY set "contains_waste": true if there is actual OUTDOOR GARBAGE, TRASH, OR POLLUTION in the photo.
 
-Nếu "contains_waste": true, hãy phân tích kỹ:
-- "waste_type": Phân loại rác rõ ràng (Ví dụ: Rác sinh hoạt, Xà bần/Đất đá, Rác cồng kềnh, Rác nhựa/Bao bì, Rác nguy hại/y tế...).
-- "severity": Mức độ ô nhiễm ("Nhẹ", "Trung bình", hoặc "Nặng").
-- "dispatch_plan": Đề xuất chính xác và tự nhiên lực lượng & dụng cụ cần thiết để dọn dẹp.
-
-BẮT BUỘC TRẢ VỀ JSON THUẦN TÚY KHÔNG KÈM LỜI DẪN THEO ĐÚNG MẪU:
+Respond ONLY with raw JSON matching this structure:
 {
-  "contains_waste": true,
-  "severity": "Nhẹ" hoặc "Trung bình" hoặc "Nặng",
-  "waste_type": "Tên loại rác phân tích được",
-  "dispatch_plan": "Mô tả tự nhiên lực lượng và phương tiện (Ví dụ: Cần 2 công nhân + xe đẩy rác HOẶC Cần 1 xe cuốc + 1 xe tải 5 tấn + 4 công nhân)"
+  "contains_waste": false,
+  "severity": "Thấp",
+  "waste_type": "Không có",
+  "dispatch_plan": "Không cần điều phối"
 }
 """
 
     payload = {
         "prompt": prompt,
         "image": image_array,
-        "max_tokens": 300,
+        "max_tokens": 200,
         "temperature": 0.1,
     }
 
@@ -383,8 +349,9 @@ def save_ai_result(report_id, analysis):
 
   if not analysis["success"]:
     conn.execute(
-        "UPDATE reports SET ai_analyzed = 0, ai_result = ? WHERE id = ?",
-        (f"❌ Lỗi: {analysis['error']}", report_id),
+        "UPDATE reports SET ai_analyzed = 0, status = 'Spam/Từ chối', ai_result"
+        " = ? WHERE id = ?",
+        (f"❌ Lỗi xử lý: {analysis['error']}", report_id),
     )
     conn.commit()
     conn.close()
@@ -401,12 +368,13 @@ def save_ai_result(report_id, analysis):
         f"🔴 **Phát hiện rác:** CÓ RÁC\n"
         f"🏷️ **Loại rác:** {parsed.get('waste_type', 'Rác sinh hoạt')}\n"
         f"⚠️ **Mức độ:** {parsed.get('severity', 'Trung bình')}\n"
-        f"🚚 **AI Điều phối lực lượng và vật dụng:** {parsed.get('dispatch_plan', 'Bố trí 2 công nhân và xe gom rác chuyên dụng.')}"
+        f"🚚 **AI Điều phối lực lượng và vật dụng:** {parsed.get('dispatch_plan', 'Bố trí công nhân và phương tiện thu gom.')}"
     )
   else:
     display_text = (
-        "🟢 **Phát hiện rác:** KHÔNG CÓ RÁC (Ảnh chân dung/không thuộc điểm"
-        " rác)\n❌ **Kết luận:** Báo cáo bị từ chối bởi hệ thống kiểm định AI."
+        "🟢 **Phát hiện rác:** KHÔNG CÓ RÁC (Ảnh chân dung/mặt người hoặc không"
+        " thuộc hiện trường rác thải).\n❌ **Kết luận:** Báo cáo bị hệ thống"
+        " từ chối (Spam)."
     )
 
   conn.execute(
@@ -446,7 +414,6 @@ menu = st.sidebar.radio(
     ],
 )
 
-# TỰ ĐỘNG KHÓA VÀ YÊU CẦU MÃ PIN KHI ĐỔI MENU
 if "last_menu" not in st.session_state:
   st.session_state["last_menu"] = menu
 
@@ -459,7 +426,7 @@ if st.session_state["last_menu"] != menu:
 st.title("🌳 Urban GreenEye AI - Quản lý Ô nhiễm Đô thị")
 
 # ------------------------------------------------------------
-# 1. GỬI BÁO CÁO (YÊU CẦU BẮT BUỘC NHẬP THÔNG TIN)
+# 1. GỬI BÁO CÁO (BẮT BUỘC NHẬP + AI PHÂN TÍCH THỰC TẾ)
 # ------------------------------------------------------------
 if menu == "📷 Gửi báo cáo":
   st.header("📷 Gửi báo cáo điểm rác")
@@ -490,7 +457,7 @@ if menu == "📷 Gửi báo cáo":
   final_location = manual_location.strip() or selected_location
 
   if st.button("🚀 Gửi báo cáo", type="primary", use_container_width=True):
-    # KIỂM TRA ĐIỀU KIỆN BẮT BUỘC
+    # RÀNG BUỘC BẮT BUỘC NHẬP
     if (
         not reporter_name.strip()
         or not uploaded_file
@@ -498,8 +465,7 @@ if menu == "📷 Gửi báo cáo":
     ):
       st.error(
           "⚠️ **Không thể gửi!** Vui lòng nhập đầy đủ các thông tin bắt buộc (*):"
-          " Tên người báo cáo, Ảnh hiện trường và Vị trí (chọn trên bản đồ hoặc"
-          " nhập địa chỉ)."
+          " Tên người báo cáo, Ảnh hiện trường và Vị trí."
       )
       st.stop()
 
@@ -508,11 +474,12 @@ if menu == "📷 Gửi báo cáo":
     image_path = os.path.join(UPLOAD_DIR, f"{timestamp}.jpg")
     image.save(image_path, format="JPEG", quality=90)
 
+    # LƯU CHUỖI TẠM THỜI (KHÔNG GÁN "CÓ RÁC" MẶC ĐỊNH HỆ THỐNG)
     conn = get_conn()
     cursor = conn.execute(
         """
             INSERT INTO reports (reporter_name, image_path, description, location, status, ai_result)
-            VALUES (?, ?, ?, ?, 'Đã nhận', 'Đã tiếp nhận. AI đang phân tích và điều phối...')
+            VALUES (?, ?, ?, ?, 'Đang xử lý', '⏳ Hệ thống AI đang kiểm định hình ảnh...')
         """,
         (
             reporter_name.strip(),
@@ -526,30 +493,21 @@ if menu == "📷 Gửi báo cáo":
     conn.close()
 
     if cloudflare_configured():
-      with st.spinner(
-          "🤖 **AI đang phân tích, kiểm định báo cáo & điều phối lực"
-          " lượng...**"
-      ):
+      with st.spinner("🤖 **AI Vision đang kiểm tra hình ảnh...**"):
         analysis = analyze_image_with_cloudflare(image_path)
         save_ai_result(report_id, analysis)
 
-    st.success(
-        f"✅ **Đã tiếp nhận & AI duyệt xong Báo cáo #{report_id}!** Chờ đội dọn"
-        " đến xử lý."
-    )
+    st.success(f"✅ **Đã xử lý xong Báo cáo #{report_id}!**")
     st.rerun()
 
 # ------------------------------------------------------------
-# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ (YÊU CẦU MÃ PIN KHI VÀO)
+# 2. ĐỘI DỌN DẸP NHẬN NHIỆM VỤ
 # ------------------------------------------------------------
 elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
   st.header("🧹 Đội dọn dẹp tiếp nhận & Báo cáo kết quả")
 
   if not st.session_state.get("team_auth_ok", False):
-    st.info(
-        "🔒 Mục này dành riêng cho Đội dọn dẹp. Vui lòng nhập Mã PIN để truy"
-        " cập."
-    )
+    st.info("🔒 Mục này dành riêng cho Đội dọn dẹp.")
     pin_input = st.text_input(
         "🔑 Nhập Mã PIN Đội dọn dẹp (TEAM_PIN):", type="password"
     )
@@ -562,7 +520,6 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
         st.error("❌ Mã PIN không chính xác!")
     st.stop()
 
-  # NỘI DUNG SAU KHÍ ĐÃ NHẬP ĐÚNG PIN
   conn = get_conn()
   pending_tasks = conn.execute(
       "SELECT * FROM reports WHERE status IN ('Đã duyệt', 'Đang dọn') ORDER BY"
@@ -621,17 +578,14 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
         )
         conn.commit()
         conn.close()
-        st.success(
-            f"Đội '{team_name}' đã nhận nhiệm vụ cho điểm"
-            f" #{current_task['id']}!"
-        )
+        st.success(f"Đội '{team_name}' đã nhận nhiệm vụ!")
         st.rerun()
 
     st.write("📸 **Nộp bằng chứng hoàn thành:**")
     cleaned_file = st.file_uploader(
         "Tải ảnh ĐÃ DỌN SẠCH RÁC:", type=["jpg", "jpeg", "png"]
     )
-    cleanup_note = st.text_area("Ghi chú thu gom (Khối lượng rác, xe chở...):")
+    cleanup_note = st.text_area("Ghi chú thu gom:")
 
     if st.button("✅ Báo cáo dọn xong & Tích điểm", type="primary"):
       if not cleaned_file or not team_name.strip():
@@ -661,10 +615,7 @@ elif menu == "🧹 Đội dọn dẹp nhận nhiệm vụ":
       add_team_points(team_name.strip(), 20)
 
       st.balloons()
-      st.success(
-          f"🎉 Hoàn tất điểm rác #{current_task['id']}! Cộng +10đ cho"
-          f" '{current_task['reporter_name']}' và +20đ cho Đội '{team_name}'!"
-      )
+      st.success(f"🎉 Hoàn tất điểm rác #{current_task['id']}!")
       st.rerun()
 
     with st.popover(f"🗑️ Xóa báo cáo #{current_task['id']}"):
@@ -736,20 +687,6 @@ elif menu == "✅ Danh sách đã dọn":
               else:
                 st.error("PIN sai!")
 
-    if selected_done_del:
-      st.markdown("---")
-      with st.popover(f"❌ Xóa {len(selected_done_del)} báo cáo đã dọn chọn"):
-        pin_done_m = st.text_input(
-            "Mã PIN xóa loạt:", type="password", key="pin_done_m"
-        )
-        if st.button("Xác nhận xóa loạt"):
-          if pin_done_m in [STAFF_PIN, ADMIN_PIN]:
-            delete_reports_by_ids(selected_done_del)
-            st.success("Đã xóa!")
-            st.rerun()
-          else:
-            st.error("PIN sai!")
-
 # ------------------------------------------------------------
 # 4. BẢNG XẾP HẠNG TÍCH ĐIỂM
 # ------------------------------------------------------------
@@ -787,17 +724,13 @@ elif menu == "🏆 Bảng xếp hạng tích điểm":
         )
 
 # ------------------------------------------------------------
-# 5. BÁO CÁO SPAM & XÓA (BẢO MẬT MÃ PIN STAFF)
+# 5. BÁO CÁO SPAM & XÓA (KHI ẢNH MẶT NGƯỜI SẼ VÀO ĐÂY)
 # ------------------------------------------------------------
 elif menu == "🗑️ Báo cáo Spam & Xóa":
   st.header("🗑 Danh sách Báo cáo Spam/Từ chối")
 
-  # YÊU CẦU MÃ PIN STAFF HOẶC ADMIN KHI TRUY CẬP
   if not st.session_state.get("staff_auth_ok", False):
-    st.warning(
-        "🔒 Khu vực quản lý Spam cần xác minh. Vui lòng nhập Mã PIN Nhân viên"
-        " (Staff)."
-    )
+    st.warning("🔒 Vui lòng nhập Mã PIN Nhân viên (STAFF_PIN).")
     pin_staff_input = st.text_input(
         "🔑 Nhập Mã PIN Staff (STAFF_PIN):", type="password"
     )
@@ -810,7 +743,6 @@ elif menu == "🗑️ Báo cáo Spam & Xóa":
         st.error("❌ Mã PIN Nhân viên không chính xác!")
     st.stop()
 
-  # NỘI DUNG SAU KHÍ ĐÃ NHẬP ĐÚNG PIN STAFF
   conn = get_conn()
   rows = conn.execute(
       "SELECT * FROM reports WHERE status = 'Spam/Từ chối' ORDER BY id DESC"
@@ -837,16 +769,13 @@ elif menu == "🗑️ Báo cáo Spam & Xóa":
           st.rerun()
 
 # ------------------------------------------------------------
-# 6. RESET & CÀI ĐẶT AI (YÊU CẦU MÃ PIN ADMIN KHI VÀO)
+# 6. RESET & CÀI ĐẶT AI
 # ------------------------------------------------------------
 elif menu == "⚙️ Reset & Cài đặt AI":
   st.header("⚙️ Cấu hình Hệ thống & AI")
 
   if not st.session_state.get("admin_auth_ok", False):
-    st.warning(
-        "🔒 Khu vực này chỉ dành cho Quản trị viên (Admin). Vui lòng nhập Mã"
-        " PIN ADMIN."
-    )
+    st.warning("🔒 Vui lòng nhập Mã PIN ADMIN.")
     pin_admin_input = st.text_input(
         "🔑 Nhập Mã PIN ADMIN (ADMIN_PIN):", type="password"
     )
@@ -859,28 +788,16 @@ elif menu == "⚙️ Reset & Cài đặt AI":
         st.error("❌ Mã PIN ADMIN không chính xác!")
     st.stop()
 
-  # NỘI DUNG TRANG CÀI ĐẶT SAU KHI VÀO THÀNH CÔNG
   st.subheader("🤖 Trạng thái kết nối Cloudflare AI")
   if cloudflare_configured():
     st.success("✅ Cloudflare AI đã kết nối thành công!")
-    st.write(
-        "• **Account ID:**"
-        f" `{CF_ACCOUNT_ID[:6]}...{CF_ACCOUNT_ID[-4:] if len(CF_ACCOUNT_ID) > 10 else ''}`"
-    )
+    st.write(f"• **Account ID:** `{CF_ACCOUNT_ID[:6]}...`")
     st.write(f"• **Model:** `{CF_MODEL}`")
   else:
-    st.error(
-        "❌ Chưa kết nối Cloudflare AI. Vui lòng bổ sung `CLOUDFLARE_ACCOUNT_ID`"
-        " và `CLOUDFLARE_AUTH_TOKEN` vào Secrets."
-    )
+    st.error("❌ Chưa kết nối Cloudflare AI.")
 
   st.markdown("---")
-
   st.subheader("🔄 Reset dữ liệu & Đếm Báo cáo về 1")
-  st.warning(
-      "⚠ Hành động này sẽ xóa TOÀN BỘ báo cáo, hình ảnh và bảng xếp hạng tích"
-      " điểm!"
-  )
 
   with st.popover("🚨 BẮT ĐẦU RESET HỆ THỐNG VỀ 1"):
     confirm_text = st.text_input(
@@ -893,9 +810,7 @@ elif menu == "⚙️ Reset & Cài đặt AI":
     ):
       if confirm_text.strip().upper() == "RESET":
         reset_database_to_one()
-        st.success(
-            "✅ Đã reset toàn bộ hệ thống! Báo cáo tiếp theo sẽ tính từ #1."
-        )
+        st.success("✅ Đã reset toàn bộ hệ thống về ID #1!")
         st.rerun()
       else:
         st.error("Bạn nhập từ xác nhận chưa chính xác!")
