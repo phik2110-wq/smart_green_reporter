@@ -1629,71 +1629,77 @@ def page_cleanup_team():
 
     approved = get_reports("Đã duyệt")
 
-    if not approved:
-        st.success("Hiện chưa có nhiệm vụ đã được AI xác nhận.")
-        return
+    if approved:
+        st.markdown("### 📌 Nhiệm vụ chờ nhận")
 
-    st.markdown("### 📌 Nhiệm vụ chờ nhận")
+        for row in approved:
+            with st.container(border=True):
+                cols = st.columns([1, 1])
 
-    for row in approved:
-        with st.container(border=True):
-            cols = st.columns([1, 1])
+                with cols[0]:
+                    st.markdown(f"**Báo cáo:** `{str(row['id'])[:8]}`")
+                    st.write(f"📍 {row['location'] or 'Chưa có địa chỉ'}")
+                    st.write(f"📝 {row['description'] or 'Không có mô tả'}")
 
-            with cols[0]:
-                st.markdown(f"**Báo cáo:** `{str(row['id'])[:8]}`")
-                st.write(f"📍 {row['location'] or 'Chưa có địa chỉ'}")
-                st.write(f"📝 {row['description'] or 'Không có mô tả'}")
+                    if row["ai_raw_json"]:
+                        try:
+                            ai = json.loads(row["ai_raw_json"])
+                            st.write(
+                                f"🗑️ **Loại rác:** {ai.get('waste_type', '')}"
+                            )
+                            st.write(
+                                f"⚠️ **Mức độ:** {ai.get('severity', '')}"
+                            )
+                            st.write(
+                                f"🚚 **Phương án:** {ai.get('dispatch_plan', '')}"
+                            )
+                        except Exception:
+                            pass
 
-                if row["ai_raw_json"]:
-                    try:
-                        ai = json.loads(row["ai_raw_json"])
-                        st.write(
-                            f"🗑️ **Loại rác:** {ai.get('waste_type', '')}"
-                        )
-                        st.write(
-                            f"⚠️ **Mức độ:** {ai.get('severity', '')}"
-                        )
-                        st.write(
-                            f"🚚 **Phương án:** {ai.get('dispatch_plan', '')}"
-                        )
-                    except Exception:
-                        pass
-
-                if st.button(
-                    "📌 Nhận nhiệm vụ",
-                    key=f"assign_{row['id']}",
-                    use_container_width=True,
-                ):
-                    if not team_name.strip():
-                        st.error("Nhập tên đội trước.")
-                    else:
-                        conn = get_db()
-                        conn.execute(
-                            """
-                            UPDATE reports
-                            SET assigned_team = ?, status = 'Đang dọn'
-                            WHERE id = ?
-                            """,
-                            (team_name.strip(), row["id"]),
-                        )
-                        conn.commit()
-                        conn.close()
-                        st.rerun()
-
-            with cols[1]:
-                if row["image_path"] and os.path.exists(row["image_path"]):
-                    st.image(
-                        row["image_path"],
+                    if st.button(
+                        "📌 Nhận nhiệm vụ",
+                        key=f"assign_{row['id']}",
                         use_container_width=True,
-                    )
+                    ):
+                        if not team_name.strip():
+                            st.error("Nhập tên đội trước.")
+                        else:
+                            conn = get_db()
+                            conn.execute(
+                                """
+                                UPDATE reports
+                                SET assigned_team = ?, status = 'Đang dọn'
+                                WHERE id = ?
+                                """,
+                                (team_name.strip(), row["id"]),
+                            )
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
 
-            st.markdown("#### 📍 Vị trí trên bản đồ")
-            show_task_map(row)
+                with cols[1]:
+                    if row["image_path"] and os.path.exists(row["image_path"]):
+                        st.image(
+                            row["image_path"],
+                            use_container_width=True,
+                        )
 
+                st.markdown("#### 📍 Vị trí trên bản đồ")
+                show_task_map(row)
+
+    else:
+        st.info("Hiện chưa có nhiệm vụ mới đang chờ nhận.")
+
+    # Không return ở đây: nhiệm vụ đã nhận phải tiếp tục hiển thị
+    # để đội dọn dẹp tải ảnh sau khi dọn và gửi báo cáo hoàn thành.
     active = get_reports("Đang dọn")
 
     if active:
-        st.markdown("### 🧹 Nhiệm vụ đang dọn")
+        st.markdown("### 🧹 NHIỆM VỤ ĐÃ NHẬN — BÁO CÁO SAU DỌN DẸP")
+        st.caption("Tải ảnh hiện trường sau khi dọn, ghi chú kết quả rồi bấm 'Xác nhận đã dọn xong'.")
+
+    else:
+        st.info("Bạn chưa nhận nhiệm vụ nào. Khi bấm 'Nhận nhiệm vụ', báo cáo sẽ xuất hiện ở khu vực 'Báo cáo sau dọn dẹp'.")
 
     for row in active:
         with st.container(border=True):
