@@ -244,7 +244,6 @@ def prepare_image(image_path, max_side=1024, quality=82):
 
 
 def parse_ai_text(raw_input):
-def parse_ai_text(raw_input):
 
     if isinstance(raw_input, dict):
         data = raw_input
