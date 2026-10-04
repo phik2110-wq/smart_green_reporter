@@ -48,7 +48,7 @@ def get_setting(name: str, default: str = "") -> str:
 
 
 CF_ACCOUNT_ID = get_setting("CLOUDFLARE_ACCOUNT_ID")
-CF_AUTH_TOKEN = get_setting("CLOUDFLARE_AUTH_TOKEN")
+CF_AUTH_TOKEN = get_setting("CLOUDFLARE_AUTH_TOKEN") or get_setting("CLOUDFLARE_API_TOKEN")
 ADMIN_PIN = get_setting("ADMIN_PIN", "1234")
 TEAM_PIN = get_setting("TEAM_PIN", "1234")
 STAFF_PIN = get_setting("STAFF_PIN", "1234")
@@ -303,6 +303,45 @@ st.markdown(
     font-size: .85rem;
 }
 
+/* ===== Ô NHẬP LIỆU: NỀN TỐI, CHỮ TRẮNG ===== */
+.stApp input,
+.stApp textarea,
+.stApp [data-baseweb="input"],
+.stApp [data-baseweb="textarea"],
+.stApp [data-baseweb="input"] > div,
+.stApp [data-baseweb="textarea"] > div {
+    background-color: #252631 !important;
+    color: #ffffff !important;
+    border-color: #3d4050 !important;
+}
+
+.stApp input,
+.stApp textarea {
+    -webkit-text-fill-color: #ffffff !important;
+    caret-color: #ffffff !important;
+}
+
+.stApp input::placeholder,
+.stApp textarea::placeholder {
+    color: #c8cbd3 !important;
+    opacity: 1 !important;
+}
+
+.stApp [data-baseweb="input"] input,
+.stApp [data-baseweb="textarea"] textarea {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+.stApp [data-baseweb="select"] > div {
+    background-color: #252631 !important;
+    color: #ffffff !important;
+}
+
+.stApp [data-baseweb="select"] span {
+    color: #ffffff !important;
+}
+
 div[data-testid="stFileUploader"] {
     border: 1px dashed #75b982;
     border-radius: 16px;
@@ -406,9 +445,51 @@ div[data-testid="stFileUploader"] {
 # =========================================================
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=20)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 20000")
     return conn
+
+
+def _table_columns(conn, table_name):
+    return {row["name"]: row for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _ensure_points_table(conn, table_name):
+    """Tự sửa bảng điểm cũ nếu schema không còn đúng."""
+    cols = _table_columns(conn, table_name)
+    if not cols:
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {table_name} (name TEXT PRIMARY KEY, points INTEGER DEFAULT 0)"
+        )
+        return
+
+    required = {"name", "points"}
+    if required.issubset(cols.keys()):
+        return
+
+    # Giữ lại dữ liệu cũ nếu tìm được cột tên/điểm tương ứng.
+    old_name = next((c for c in ("name", "username", "user_name", "team_name") if c in cols), None)
+    old_points = next((c for c in ("points", "score", "total_points") if c in cols), None)
+    temp = f"{table_name}_new"
+    conn.execute(f"DROP TABLE IF EXISTS {temp}")
+    conn.execute(f"CREATE TABLE {temp} (name TEXT PRIMARY KEY, points INTEGER DEFAULT 0)")
+
+    if old_name and old_points:
+        rows = conn.execute(f"SELECT {old_name}, {old_points} FROM {table_name}").fetchall()
+        for r in rows:
+            if r[0] is not None:
+                try:
+                    pts = int(r[1] or 0)
+                except Exception:
+                    pts = 0
+                conn.execute(
+                    f"INSERT OR REPLACE INTO {temp}(name, points) VALUES (?, ?)",
+                    (str(r[0]), pts),
+                )
+
+    conn.execute(f"DROP TABLE {table_name}")
+    conn.execute(f"ALTER TABLE {temp} RENAME TO {table_name}")
 
 
 def init_db():
@@ -439,40 +520,35 @@ def init_db():
         """
     )
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_points (
-            name TEXT PRIMARY KEY,
-            points INTEGER DEFAULT 0
-        )
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS team_points (
-            name TEXT PRIMARY KEY,
-            points INTEGER DEFAULT 0
-        )
-        """
-    )
-
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at)")
-
-    # Tương thích với DB cũ
-    columns = {row["name"] for row in cur.execute("PRAGMA table_info(reports)").fetchall()}
-
+    # Bổ sung cột còn thiếu cho database cũ.
+    columns = _table_columns(conn, "reports")
     extra_columns = {
+        "reporter_name": "TEXT",
+        "image_path": "TEXT",
+        "description": "TEXT",
+        "location": "TEXT",
         "latitude": "REAL",
         "longitude": "REAL",
+        "status": "TEXT DEFAULT 'Đang xử lý'",
+        "ai_result": "TEXT",
+        "ai_raw_json": "TEXT",
+        "ai_analyzed": "INTEGER DEFAULT 0",
         "ai_error": "TEXT",
+        "assigned_team": "TEXT",
+        "cleanup_image_path": "TEXT",
+        "cleanup_note": "TEXT",
         "cleaned_at": "TEXT",
+        "created_at": "TEXT",
     }
-
     for column, dtype in extra_columns.items():
         if column not in columns:
             cur.execute(f"ALTER TABLE reports ADD COLUMN {column} {dtype}")
+
+    _ensure_points_table(conn, "user_points")
+    _ensure_points_table(conn, "team_points")
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at)")
 
     conn.commit()
     conn.close()
@@ -526,7 +602,7 @@ def cloudflare_url():
 def cloudflare_agree():
     """Gửi yêu cầu agree một lần khi quản trị viên chủ động bấm nút."""
     if not cloudflare_configured():
-        return False, "Thiếu CLOUDFLARE_ACCOUNT_ID hoặc CLOUDFLARE_AUTH_TOKEN."
+        return False, "Thiếu CLOUDFLARE_ACCOUNT_ID hoặc CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
 
     try:
         response = requests.post(
@@ -608,37 +684,31 @@ def normalize_bool(value):
 def analyze_image_with_cloudflare(image_bytes: bytes):
     if not cloudflare_configured():
         raise RuntimeError(
-            "Chưa cấu hình CLOUDFLARE_ACCOUNT_ID và CLOUDFLARE_AUTH_TOKEN."
+            "Chưa cấu hình CLOUDFLARE_ACCOUNT_ID và "
+            "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
         )
 
     prompt = """
 Bạn là AI chuyên phân tích ảnh phản ánh rác thải đô thị.
 
-NHIỆM VỤ:
-- Kiểm tra ảnh có thực sự có rác thải nhìn thấy rõ hay không.
-- Chỉ công nhận là báo cáo rác khi có bằng chứng trực quan rõ ràng.
-- Nếu ảnh là chân dung, selfie, ảnh người, ảnh nhóm người, ảnh thẻ,
-  ảnh khuôn mặt hoặc chỉ có người mà không có rác rõ ràng: contains_waste=false.
-- Người xuất hiện nhỏ ở nền ảnh không phải là rác.
-- Nếu không chắc chắn: contains_waste=false.
-- Không suy đoán những thứ không nhìn thấy.
-- Không được dùng câu xử lý cố định. dispatch_plan phải do AI tự tạo
-  dựa trên rác thực tế trong ảnh.
-- Nếu không có rác, dispatch_plan phải là chuỗi rỗng.
-- is_waste_amount_sufficient chỉ true khi lượng rác nhìn thấy đủ để
-  trở thành một phản ánh môi trường hợp lệ.
+Kiểm tra ảnh có thực sự có rác thải nhìn thấy rõ hay không.
+- Chân dung, selfie, ảnh người, ảnh nhóm, ảnh thẻ, khuôn mặt: không phải rác.
+- Người nhỏ ở nền ảnh không phải rác.
+- Không thấy rác rõ ràng hoặc không chắc chắn: contains_waste=false.
+- Không suy đoán vật thể không nhìn thấy.
+- dispatch_plan phải do AI tự tạo dựa trên rác thực tế; nếu không có rác thì để chuỗi rỗng.
 - Trả lời hoàn toàn bằng tiếng Việt.
-- CHỈ trả về một JSON object, không markdown, không giải thích bên ngoài JSON.
+- CHỈ trả về JSON, không markdown.
 
 JSON bắt buộc:
 {
   "contains_waste": true,
   "is_waste_amount_sufficient": true,
   "natural_report": "Nhận xét tự nhiên bằng tiếng Việt.",
-  "waste_type": "Loại rác nếu có, nếu không có thì chuỗi rỗng.",
-  "severity": "Mức độ nếu có, nếu không có thì chuỗi rỗng.",
-  "visual_evidence": "Những gì thực sự nhìn thấy trong ảnh.",
-  "spam_reason": "Lý do không hợp lệ nếu không có rác, nếu hợp lệ thì chuỗi rỗng.",
+  "waste_type": "Loại rác nếu có.",
+  "severity": "Mức độ nếu có.",
+  "visual_evidence": "Những gì thực sự nhìn thấy.",
+  "spam_reason": "Lý do không hợp lệ nếu không có rác.",
   "dispatch_plan": "Phương án xử lý do AI tự đề xuất nếu có rác."
 }
 """
@@ -650,52 +720,43 @@ JSON bắt buộc:
         "temperature": 0,
     }
 
-    response = requests.post(
-        cloudflare_url(),
-        headers={
-            "Authorization": f"Bearer {CF_AUTH_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=90,
-    )
-
-    if not response.ok:
-        raise RuntimeError(
-            f"Cloudflare HTTP {response.status_code}: {response.text[:1000]}"
+    try:
+        response = requests.post(
+            cloudflare_url(),
+            headers={
+                "Authorization": f"Bearer {CF_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=90,
         )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Không kết nối được Cloudflare: {exc}") from exc
 
-    data = response.json()
+    try:
+        data = response.json()
+    except Exception:
+        data = {}
 
-    if not data.get("success"):
-        raise RuntimeError(json.dumps(data, ensure_ascii=False)[:1500])
+    if not response.ok or not data.get("success"):
+        detail = json.dumps(data, ensure_ascii=False)[:2500] if data else response.text[:2500]
+        raise RuntimeError(f"Cloudflare HTTP {response.status_code}: {detail}")
 
-    result = data.get("result")
-
+    result = data.get("result", {})
     if isinstance(result, dict):
-        text = (
-            result.get("response")
-            or result.get("text")
-            or result.get("output")
-            or json.dumps(result, ensure_ascii=False)
-        )
+        text = result.get("response") or result.get("text") or result.get("output")
+        if text is None:
+            text = json.dumps(result, ensure_ascii=False)
     else:
         text = str(result)
 
     parsed = extract_json_object(text)
-
     parsed["contains_waste"] = normalize_bool(parsed.get("contains_waste"))
-    parsed["is_waste_amount_sufficient"] = normalize_bool(
-        parsed.get("is_waste_amount_sufficient")
-    )
+    parsed["is_waste_amount_sufficient"] = normalize_bool(parsed.get("is_waste_amount_sufficient"))
 
     for key in [
-        "natural_report",
-        "waste_type",
-        "severity",
-        "visual_evidence",
-        "spam_reason",
-        "dispatch_plan",
+        "natural_report", "waste_type", "severity",
+        "visual_evidence", "spam_reason", "dispatch_plan",
     ]:
         parsed[key] = str(parsed.get(key, "") or "").strip()
 
@@ -714,32 +775,47 @@ def insert_report(
     latitude,
     longitude,
 ):
-    report_id = str(uuid.uuid4())
     created_at = datetime.datetime.now().isoformat(timespec="seconds")
-
     conn = get_db()
-    conn.execute(
-        """
-        INSERT INTO reports (
-            id, reporter_name, image_path, description, location,
-            latitude, longitude, status, created_at
+
+    # Database cũ có thể dùng INTEGER PRIMARY KEY.
+    # Database mới dùng TEXT UUID. Tự nhận diện để tránh "datatype mismatch".
+    id_info = conn.execute("PRAGMA table_info(reports)").fetchall()
+    id_column = next((r for r in id_info if r["name"] == "id"), None)
+
+    if id_column and "INT" in (id_column["type"] or "").upper() and id_column["pk"] == 1:
+        cur = conn.execute(
+            """
+            INSERT INTO reports (
+                reporter_name, image_path, description, location,
+                latitude, longitude, status, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'Đang xử lý', ?)
+            """,
+            (
+                reporter_name, image_path, description, location,
+                latitude, longitude, created_at,
+            ),
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'Đang xử lý', ?)
-        """,
-        (
-            report_id,
-            reporter_name,
-            image_path,
-            description,
-            location,
-            latitude,
-            longitude,
-            created_at,
-        ),
-    )
+        report_id = str(cur.lastrowid)
+    else:
+        report_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO reports (
+                id, reporter_name, image_path, description, location,
+                latitude, longitude, status, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'Đang xử lý', ?)
+            """,
+            (
+                report_id, reporter_name, image_path, description, location,
+                latitude, longitude, created_at,
+            ),
+        )
+
     conn.commit()
     conn.close()
-
     return report_id
 
 
@@ -1005,7 +1081,7 @@ def show_report_card(row):
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
     st.markdown(
-        f'<div class="report-title">📋 Báo cáo {row["id"][:8]}</div>',
+        f'<div class="report-title">📋 Báo cáo {str(row["id"])[:8]}</div>',
         unsafe_allow_html=True,
     )
 
@@ -1115,42 +1191,40 @@ def page_report():
                 longitude=longitude,
             )
 
+            # Xác nhận đã gửi ngay sau khi DB nhận báo cáo.
+            st.success(
+                f"✅ Gửi báo cáo thành công! Mã báo cáo: {str(report_id)[:12]}"
+            )
+
             # AI chạy ngay sau khi báo cáo được lưu.
             if not cloudflare_configured():
-                save_ai_error(
-                    report_id,
-                    "Chưa cấu hình Cloudflare Workers AI.",
+                error = (
+                    "Chưa cấu hình Cloudflare Workers AI. "
+                    "Hãy kiểm tra CLOUDFLARE_ACCOUNT_ID và "
+                    "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
                 )
-                st.warning(
-                    "Đã lưu báo cáo nhưng chưa thể phân tích AI vì "
-                    "chưa cấu hình Cloudflare."
-                )
+                save_ai_error(report_id, error)
+                st.warning("⚠️ Báo cáo đã lưu nhưng AI chưa được cấu hình.")
                 return
 
             with st.spinner("🤖 AI đang phân tích ảnh..."):
-                parsed, raw_ai = analyze_image_with_cloudflare(prepared)
-
-            status = save_ai_result(
-                report_id,
-                parsed,
-                raw_ai,
-            )
+                try:
+                    parsed, raw_ai = analyze_image_with_cloudflare(prepared)
+                    status = save_ai_result(report_id, parsed, raw_ai)
+                except Exception as ai_exc:
+                    save_ai_error(report_id, str(ai_exc))
+                    st.error(f"❌ AI chưa phân tích được: {ai_exc}")
+                    st.info("Báo cáo vẫn được lưu. Quản trị viên có thể phân tích lại trong mục Cài đặt AI.")
+                    return
 
             if status == "Đã duyệt":
                 add_user_points(name.strip() or "Ẩn danh", 5)
-                st.success(
-                    "✅ Báo cáo hợp lệ và đã được AI xác nhận."
-                )
+                st.success("🤖 AI đã xác nhận đây là báo cáo rác hợp lệ.")
             else:
-                st.warning(
-                    "⚠️ AI xác định báo cáo không hợp lệ / không đủ "
-                    "bằng chứng về rác."
-                )
-
-            st.json(parsed)
+                st.warning("⚠️ AI xác định ảnh không đủ bằng chứng về rác nên báo cáo được đưa vào Spam/Từ chối.")
 
         except Exception as exc:
-            st.error(f"Không thể xử lý báo cáo: {exc}")
+            st.error(f"❌ Không thể lưu báo cáo: {exc}")
 
 
 # =========================================================
@@ -1163,10 +1237,15 @@ def page_cleanup_team():
     pin = st.text_input(
         "Mã PIN đội dọn dẹp",
         type="password",
+        key="team_pin_input",
     )
+    if st.button("→ Vào khu vực đội dọn dẹp", key="team_login", use_container_width=True):
+        st.session_state["team_unlocked"] = (pin == TEAM_PIN)
+        if pin != TEAM_PIN:
+            st.error("Mã PIN không đúng.")
 
-    if pin != TEAM_PIN:
-        st.info("Nhập đúng PIN để xem nhiệm vụ.")
+    if not st.session_state.get("team_unlocked", False):
+        st.info("Nhập mã PIN rồi bấm nút để vào.")
         return
 
     team_name = st.text_input(
@@ -1187,7 +1266,7 @@ def page_cleanup_team():
             cols = st.columns([1, 1])
 
             with cols[0]:
-                st.markdown(f"**Báo cáo:** `{row['id'][:8]}`")
+                st.markdown(f"**Báo cáo:** `{str(row['id'])[:8]}`")
                 st.write(f"📍 {row['location'] or 'Chưa có địa chỉ'}")
                 st.write(f"📝 {row['description'] or 'Không có mô tả'}")
 
@@ -1377,6 +1456,22 @@ def page_completed():
 # 10. BẢNG XẾP HẠNG
 # =========================================================
 
+def _read_points_table(table_name):
+    conn = get_db()
+    try:
+        # Schema đã được init_db kiểm tra, nhưng vẫn giữ fallback để app không sập.
+        cols = _table_columns(conn, table_name)
+        if "name" not in cols or "points" not in cols:
+            return []
+        return conn.execute(
+            f"SELECT name, points FROM {table_name} ORDER BY points DESC, name ASC LIMIT 50"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
 def page_leaderboard():
     st.subheader("🏆 Bảng xếp hạng tích điểm")
 
@@ -1384,41 +1479,21 @@ def page_leaderboard():
 
     with col1:
         st.markdown("### 👤 Người dân")
-
-        conn = get_db()
-        users = conn.execute(
-            """
-            SELECT name, points
-            FROM user_points
-            ORDER BY points DESC, name ASC
-            LIMIT 50
-            """
-        ).fetchall()
-        conn.close()
-
-        for index, row in enumerate(users, 1):
-            st.write(
-                f"**{index}. {row['name']}** — {row['points']} điểm"
-            )
+        users = _read_points_table("user_points")
+        if not users:
+            st.info("Chưa có người dân nào được cộng điểm.")
+        else:
+            for index, row in enumerate(users, 1):
+                st.write(f"**{index}. {row['name']}** — {row['points']} điểm")
 
     with col2:
         st.markdown("### 🧹 Đội dọn dẹp")
-
-        conn = get_db()
-        teams = conn.execute(
-            """
-            SELECT name, points
-            FROM team_points
-            ORDER BY points DESC, name ASC
-            LIMIT 50
-            """
-        ).fetchall()
-        conn.close()
-
-        for index, row in enumerate(teams, 1):
-            st.write(
-                f"**{index}. {row['name']}** — {row['points']} điểm"
-            )
+        teams = _read_points_table("team_points")
+        if not teams:
+            st.info("Chưa có đội dọn dẹp nào được cộng điểm.")
+        else:
+            for index, row in enumerate(teams, 1):
+                st.write(f"**{index}. {row['name']}** — {row['points']} điểm")
 
 
 # =========================================================
@@ -1431,10 +1506,15 @@ def page_spam():
     pin = st.text_input(
         "PIN nhân viên",
         type="password",
+        key="staff_pin_input",
     )
+    if st.button("→ Vào khu vực Spam", key="staff_login", use_container_width=True):
+        st.session_state["staff_unlocked"] = (pin == STAFF_PIN)
+        if pin != STAFF_PIN:
+            st.error("Mã PIN không đúng.")
 
-    if pin != STAFF_PIN:
-        st.info("Nhập đúng PIN để xem báo cáo Spam.")
+    if not st.session_state.get("staff_unlocked", False):
+        st.info("Nhập PIN rồi bấm nút để vào.")
         return
 
     rows = get_reports("Spam/Từ chối")
@@ -1504,17 +1584,22 @@ def page_admin():
     pin = st.text_input(
         "PIN quản trị viên",
         type="password",
+        key="admin_pin_input",
     )
+    if st.button("→ Vào khu vực quản trị", key="admin_login", use_container_width=True):
+        st.session_state["admin_unlocked"] = (pin == ADMIN_PIN)
+        if pin != ADMIN_PIN:
+            st.error("Mã PIN không đúng.")
 
-    if pin != ADMIN_PIN:
-        st.info("Nhập đúng PIN quản trị viên.")
+    if not st.session_state.get("admin_unlocked", False):
+        st.info("Nhập PIN rồi bấm nút để vào.")
         return
 
     if cloudflare_configured():
         st.success("🟢 Cloudflare Workers AI đã được cấu hình.")
     else:
         st.error(
-            "🔴 Chưa có CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AUTH_TOKEN."
+            "🔴 Chưa có CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
         )
 
     st.code(
