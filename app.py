@@ -28,27 +28,35 @@ st.markdown(
     <style>
 
     .stApp {
-        background-color: #f4f9f4;
-    }
+        .stApp {
+    background: linear-gradient(
+        135deg,
+        #e8f5e9 0%,
+        #f5fbf5 50%,
+        #e3f2fd 100%
+    );
+}
 
-    [data-testid="stSidebar"] {
-        background-color: #e8f5e9 !important;
-        border-right: 2px solid #c8e6c9;
-    }
+/* Khung nội dung chính */
+[data-testid="stMainBlockContainer"] {
+    background: #ffffff !important;
+    border: 2px solid #a5d6a7 !important;
+    border-radius: 20px !important;
+    padding: 28px !important;
+    box-shadow: 0 6px 20px rgba(46, 125, 50, 0.10) !important;
+}
 
-    h1 {
-        color: #1b5e20 !important;
-        font-weight: 700 !important;
-    }
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background-color: #e8f5e9 !important;
+    border-right: 2px solid #a5d6a7 !important;
+}
 
-    h2, h3 {
-        color: #2e7d32 !important;
-    }
-
-    .stButton > button {
-        border-radius: 8px !important;
-        font-weight: 700 !important;
-    }
+/* Nút */
+.stButton > button {
+    border-radius: 10px !important;
+    font-weight: 700 !important;
+}
 
     .stAlert {
         border-radius: 10px !important;
