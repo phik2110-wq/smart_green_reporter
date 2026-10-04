@@ -1,3 +1,4 @@
+import ast
 import datetime
 from io import BytesIO
 import base64
@@ -398,29 +399,49 @@ div[data-testid="stFileUploader"] section * {
 }
 
 .stButton > button {
+    background: #111111 !important;
+    border: 1px solid #111111 !important;
     border-radius: 12px;
-    font-weight: 700;
-    color: #111111 !important;
+    font-weight: 800;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+.stButton > button:hover,
+.stButton > button:focus {
+    background: #000000 !important;
+    border-color: #000000 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
 }
 
 .stButton > button[kind="primary"] {
-    color: #111111 !important;
+    background: #111111 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
 }
 
 /* ===== SIDEBAR COLLAPSE / MỞ-ĐÓNG ===== */
+/* Nút mở/đóng sidebar: nền đen, biểu tượng trắng */
 [data-testid="stSidebarCollapseButton"] button,
 [data-testid="stSidebarCollapsedControl"] button {
-    background: #dff3e3 !important;
-    border: 1px solid #a9d5b1 !important;
-    border-radius: 12px !important;
-    color: #111111 !important;
+    background: #111111 !important;
+    border: 1px solid #000000 !important;
+    border-radius: 10px !important;
+    color: #ffffff !important;
+    box-shadow: 0 3px 10px rgba(0,0,0,.18) !important;
+}
+
+[data-testid="stSidebarCollapseButton"] button:hover,
+[data-testid="stSidebarCollapsedControl"] button:hover {
+    background: #000000 !important;
 }
 
 [data-testid="stSidebarCollapseButton"] svg,
 [data-testid="stSidebarCollapsedControl"] svg {
-    color: #111111 !important;
-    fill: #111111 !important;
-    stroke: #111111 !important;
+    color: #ffffff !important;
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
 }
 
 [data-testid="stSidebarCollapseButton"] button,
@@ -433,7 +454,7 @@ div[data-testid="stFileUploader"] section * {
     font-size: 26px;
     font-weight: 900;
     line-height: 1;
-    color: #111111 !important;
+    color: #ffffff !important;
 }
 
 [data-testid="stSidebarCollapsedControl"] button::before {
@@ -441,12 +462,28 @@ div[data-testid="stFileUploader"] section * {
     font-size: 26px;
     font-weight: 900;
     line-height: 1;
-    color: #111111 !important;
+    color: #ffffff !important;
 }
 
 [data-testid="stSidebarCollapseButton"] svg,
 [data-testid="stSidebarCollapsedControl"] svg {
     display: none !important;
+}
+
+/* ===== CÀI ĐẶT AI: Ô NHẬP ĐEN, CHỮ TRẮNG ===== */
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea {
+    background: #111111 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid #000000 !important;
+}
+
+[data-testid="stTextInput"] input::placeholder,
+[data-testid="stTextArea"] textarea::placeholder {
+    color: #d1d5db !important;
+    -webkit-text-fill-color: #d1d5db !important;
+    opacity: 1 !important;
 }
 
 /* ===== MOBILE ===== */
@@ -483,7 +520,166 @@ div[data-testid="stFileUploader"] section * {
         padding: 12px 10px 18px 10px;
     }
 }
-</style>
+
+    /* ===== INPUT / SELECT / TEXTAREA: focus = black + white ===== */
+    .stTextInput input,
+    .stTextArea textarea,
+    .stNumberInput input,
+    .stDateInput input,
+    .stTimeInput input {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        -webkit-text-fill-color: #111111 !important;
+        border: 1px solid #94a3b8 !important;
+    }
+
+    .stTextInput input:focus,
+    .stTextArea textarea:focus,
+    .stNumberInput input:focus,
+    .stDateInput input:focus,
+    .stTimeInput input:focus {
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        border-color: #000000 !important;
+        box-shadow: 0 0 0 1px #000000 !important;
+    }
+
+    .stTextInput input::placeholder,
+    .stTextArea textarea::placeholder,
+    .stNumberInput input::placeholder,
+    .stDateInput input::placeholder,
+    .stTimeInput input::placeholder {
+        color: #64748b !important;
+        -webkit-text-fill-color: #64748b !important;
+    }
+
+    .stTextInput input:focus::placeholder,
+    .stTextArea textarea:focus::placeholder,
+    .stNumberInput input:focus::placeholder,
+    .stDateInput input:focus::placeholder,
+    .stTimeInput input:focus::placeholder {
+        color: #d1d5db !important;
+        -webkit-text-fill-color: #d1d5db !important;
+    }
+
+    /* ===== SELECTBOX / MULTISELECT ===== */
+    div[data-baseweb="select"] > div {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border-color: #94a3b8 !important;
+    }
+
+    div[data-baseweb="select"]:focus-within > div {
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        border-color: #000000 !important;
+    }
+
+    div[data-baseweb="select"] *,
+    div[data-baseweb="select"] input {
+        color: #111111 !important;
+        -webkit-text-fill-color: #111111 !important;
+    }
+
+    div[data-baseweb="select"]:focus-within *,
+    div[data-baseweb="select"]:focus-within input {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+    }
+
+    /* Dropdown menu */
+    div[role="listbox"],
+    div[role="option"] {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+    }
+
+    div[role="option"]:hover,
+    div[role="option"][aria-selected="true"] {
+        background-color: #000000 !important;
+        color: #ffffff !important;
+    }
+
+    /* ===== BUTTONS ===== */
+    .stButton > button,
+    .stFormSubmitButton > button,
+    button[kind="secondary"],
+    button[kind="primary"] {
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        border: 1px solid #000000 !important;
+    }
+
+    .stButton > button:hover,
+    .stFormSubmitButton > button:hover,
+    button[kind="secondary"]:hover,
+    button[kind="primary"]:hover {
+        background-color: #222222 !important;
+        color: #ffffff !important;
+        border-color: #000000 !important;
+    }
+
+    /* ===== FILE UPLOADER ===== */
+    div[data-testid="stFileUploader"] section {
+        background-color: #ffffff !important;
+        border: 1px solid #94a3b8 !important;
+    }
+
+    div[data-testid="stFileUploader"] section *,
+    div[data-testid="stFileUploader"] small,
+    div[data-testid="stFileUploader"] span,
+    div[data-testid="stFileUploader"] p {
+        color: #111111 !important;
+        -webkit-text-fill-color: #111111 !important;
+    }
+
+    div[data-testid="stFileUploader"] button {
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        border: 1px solid #000000 !important;
+    }
+
+    div[data-testid="stFileUploader"] button * {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+    }
+
+    /* ===== CHECKBOX / RADIO ===== */
+    .stCheckbox label,
+    .stRadio label,
+    .stToggle label {
+        color: #111111 !important;
+    }
+
+    /* ===== SIDEBAR RADIO / SELECT ===== */
+    section[data-testid="stSidebar"] .stRadio label,
+    section[data-testid="stSidebar"] .stSelectbox label {
+        color: #111111 !important;
+    }
+
+    /* ===== EXPANDER ===== */
+    details summary {
+        color: #111111 !important;
+    }
+
+    
+    /* Sidebar open/close control */
+    button[data-testid="stSidebarCollapseButton"],
+    button[data-testid="stSidebarCollapsedControl"] {
+        background: #000000 !important;
+        color: #ffffff !important;
+        border: 1px solid #000000 !important;
+    }
+
+    button[data-testid="stSidebarCollapseButton"] *,
+    button[data-testid="stSidebarCollapsedControl"] * {
+        color: #ffffff !important;
+        fill: #ffffff !important;
+    }
+
+    </style>
 """,
     unsafe_allow_html=True,
 )
@@ -700,19 +896,67 @@ def image_to_data_uri(image_bytes: bytes):
 
 
 def extract_json_object(text: str):
-    """Parse JSON ngay cả khi model bọc trong markdown/code fence."""
+    """
+    Đọc kết quả Vision kể cả khi model trả:
+    - JSON chuẩn với dấu ngoặc kép
+    - Python dict với dấu nháy đơn và True/False
+    - JSON/Python dict nằm trong code fence
+    """
     if isinstance(text, dict):
         return text
 
     text = str(text or "").strip()
-    candidates = [text]
+    if not text:
+        raise ValueError("AI không trả về nội dung.")
 
-    # Loại code fence ```json ... ```
-    cleaned = re.sub(r"```(?:json)?\s*", "", text, flags=re.I)
+    cleaned = re.sub(r"```(?:json|python)?\s*", "", text, flags=re.I)
     cleaned = cleaned.replace("```", "").strip()
-    candidates.append(cleaned)
 
+    candidates = [cleaned]
+
+    # Lấy từng object cân bằng ngoặc để xử lý trường hợp model thêm lời văn.
+    objects = []
+    depth = 0
+    in_string = False
+    quote_char = None
+    escaped = False
+    start_pos = None
+
+    for i, ch in enumerate(cleaned):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote_char:
+                in_string = False
+                quote_char = None
+            continue
+
+        if ch in ("\"", "'"):
+            in_string = True
+            quote_char = ch
+        elif ch == "{":
+            if depth == 0:
+                start_pos = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and start_pos is not None:
+                objects.append(cleaned[start_pos:i + 1])
+                start_pos = None
+
+    # Thử object đầy đủ trước, rồi từng object được tìm thấy.
+    candidates.extend(objects)
+
+    seen = set()
     for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+
+        # 1. JSON chuẩn
         try:
             value = json.loads(candidate)
             if isinstance(value, dict):
@@ -720,42 +964,18 @@ def extract_json_object(text: str):
         except Exception:
             pass
 
-    # Tìm object cân bằng ngoặc thay vì regex greedy.
-    depth = 0
-    in_string = False
-    escaped = False
-    start_pos = None
-    for i, ch in enumerate(cleaned):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == '{':
-            if depth == 0:
-                start_pos = i
-            depth += 1
-        elif ch == '}':
-            if depth:
-                depth -= 1
-                if depth == 0 and start_pos is not None:
-                    chunk = cleaned[start_pos:i + 1]
-                    try:
-                        value = json.loads(chunk)
-                        if isinstance(value, dict):
-                            return value
-                    except Exception:
-                        pass
-                    start_pos = None
+        # 2. Model Llama đôi khi trả Python dict: {'key': True}
+        # ast.literal_eval an toàn hơn eval và đọc được True/False/None.
+        try:
+            value = ast.literal_eval(candidate)
+            if isinstance(value, dict):
+                return value
+        except Exception:
+            pass
 
     raise ValueError(
-        "AI đã trả về nội dung nhưng không đúng JSON. "
-        f"Phản hồi nhận được: {text[:500]}"
+        "AI đã trả về nội dung nhưng không đúng JSON/Python dict. "
+        f"Phản hồi nhận được: {text[:1200]}"
     )
 
 def normalize_bool(value):
@@ -861,6 +1081,7 @@ Không được suy đoán vật thể không nhìn thấy.
 
 QUAN TRỌNG: Phản hồi phải là MỘT JSON OBJECT DUY NHẤT.
 Không markdown, không ```json, không lời mở đầu, không lời kết.
+Dùng dấu ngoặc kép chuẩn JSON, KHÔNG dùng dấu nháy đơn kiểu Python.
 Ký tự đầu tiên phải là { và ký tự cuối cùng phải là }.
 Dùng đúng 8 khóa dưới đây.
 
@@ -888,6 +1109,7 @@ Không dùng câu xử lý cố định. dispatch_plan phải dựa trên đúng
         # lần với prompt cực ngắn để chuẩn hóa, thay vì làm mất báo cáo.
         repair_prompt = f"""
 Hãy phân tích lại chính ảnh này. Chỉ trả về JSON object hợp lệ, không markdown.
+Dùng dấu ngoặc kép chuẩn JSON, KHÔNG dùng dấu nháy đơn kiểu Python.
 Không thấy rác rõ ràng hoặc không chắc chắn => contains_waste=false.
 Người/chân dung/selfie không phải rác.
 
@@ -1933,6 +2155,23 @@ show_header()
 show_stats()
 
 page = sidebar_menu()
+
+# Đổi mục = xóa toàn bộ quyền tạm thời. Admin phải nhập PIN lại ở mục mới.
+_previous_page = st.session_state.get("current_menu")
+if _previous_page is None:
+    st.session_state["current_menu"] = page
+elif _previous_page != page:
+    for _key in (
+        "admin_unlocked",
+        "admin_full_access",
+        "team_unlocked",
+        "staff_unlocked",
+    ):
+        st.session_state[_key] = False
+    # Không giữ lại PIN đã nhập khi chuyển mục.
+    for _key in ("admin_pin_input", "team_pin_input", "staff_pin_input"):
+        st.session_state.pop(_key, None)
+    st.session_state["current_menu"] = page
 
 if page == "▣  Gửi báo cáo":
     page_report()
