@@ -65,8 +65,28 @@ os.makedirs(CLEANUP_DIR, exist_ok=True)
 st.markdown(
     """
 <style>
+/* ===== TOÀN BỘ GIAO DIỆN ===== */
 .stApp {
     background: #edf7ef;
+    color: #111111 !important;
+}
+
+.stApp *,
+.stApp p,
+.stApp span,
+.stApp label,
+.stApp div,
+.stApp h1,
+.stApp h2,
+.stApp h3,
+.stApp h4,
+.stApp h5,
+.stApp h6,
+.stApp button,
+.stApp input,
+.stApp textarea,
+.stApp [data-baseweb="select"] * {
+    color: #111111 !important;
 }
 
 .block-container {
@@ -75,21 +95,156 @@ st.markdown(
     padding-bottom: 2rem;
 }
 
+/* ===== SIDEBAR ===== */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #dff3e3 0%, #c9e9cf 100%);
+    background: linear-gradient(180deg, #e5f6e8 0%, #d2eed8 55%, #c5e6cc 100%);
+    border-right: 1px solid #b5dcbc;
+}
+
+[data-testid="stSidebar"] > div:first-child {
+    padding: 18px 14px 22px 14px;
 }
 
 [data-testid="stSidebar"] * {
-    color: #164b2a !important;
+    color: #111111 !important;
 }
 
+.sidebar-brand {
+    background: rgba(255,255,255,.78);
+    border: 1px solid #a9d5b1;
+    border-radius: 20px;
+    padding: 15px;
+    margin-bottom: 14px;
+    box-shadow: 0 5px 16px rgba(35, 105, 50, .08);
+}
+
+.sidebar-brand-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.sidebar-logo {
+    width: 46px;
+    height: 46px;
+    min-width: 46px;
+    border-radius: 14px;
+    background: #176b35;
+    color: #111111 !important;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: -1px;
+}
+
+.sidebar-brand-title {
+    font-size: 1.02rem;
+    font-weight: 900;
+    line-height: 1.2;
+}
+
+.sidebar-brand-sub {
+    font-size: .76rem;
+    margin-top: 4px;
+    color: #4b6250 !important;
+}
+
+.sidebar-live {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #f7fcf8;
+    border: 1px solid #b8dfbf;
+    border-radius: 12px;
+    padding: 9px 11px;
+    margin: 10px 0 14px;
+    font-size: .8rem;
+    font-weight: 700;
+}
+
+.sidebar-live-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #27a745;
+    box-shadow: 0 0 0 4px #d9f1de;
+}
+
+.sidebar-section-title {
+    font-size: .72rem;
+    font-weight: 900;
+    letter-spacing: .12em;
+    margin: 14px 4px 7px;
+    color: #3e5d46 !important;
+    text-transform: uppercase;
+}
+
+.sidebar-info {
+    background: rgba(255,255,255,.55);
+    border: 1px solid #b6ddbd;
+    border-radius: 15px;
+    padding: 11px 12px;
+    margin-top: 14px;
+    font-size: .76rem;
+    line-height: 1.5;
+}
+
+/* Streamlit radio menu */
+[data-testid="stSidebar"] [data-testid="stRadio"] > label {
+    font-weight: 900 !important;
+    margin-bottom: 7px;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] > div {
+    gap: 6px;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {
+    gap: 6px !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    background: rgba(255,255,255,.42);
+    border: 1px solid transparent;
+    border-radius: 13px;
+    padding: 9px 10px;
+    transition: .15s ease;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
+    background: rgba(255,255,255,.85);
+    border-color: #a7d3af;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
+    background: #ffffff;
+    border-color: #8dc59a;
+    box-shadow: 0 4px 12px rgba(31, 102, 47, .10);
+}
+
+/* Ẩn radio tròn để menu giống nút điều hướng */
+[data-testid="stSidebar"] [data-testid="stRadio"] input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+/* ===== HERO ===== */
 .hero {
-    background: linear-gradient(135deg, #0d6b35, #35a853);
-    color: white;
+    background: linear-gradient(135deg, #dff3e3, #f7fcf8);
+    color: #111111 !important;
+    border: 1px solid #afd8b7;
     border-radius: 24px;
     padding: 30px;
     margin-bottom: 20px;
-    box-shadow: 0 10px 30px rgba(20, 100, 45, .16);
+    box-shadow: 0 10px 30px rgba(20, 100, 45, .10);
+}
+
+.hero h1,
+.hero p {
+    color: #111111 !important;
 }
 
 .hero h1 {
@@ -99,9 +254,10 @@ st.markdown(
 
 .hero p {
     margin: 8px 0 0;
-    opacity: .92;
+    opacity: .85;
 }
 
+/* ===== CARD ===== */
 .card {
     background: white;
     border: 1px solid #b9dfc0;
@@ -123,16 +279,16 @@ st.markdown(
 .stat-number {
     font-size: 1.8rem;
     font-weight: 800;
-    color: #176b35;
+    color: #111111 !important;
 }
 
 .stat-label {
-    color: #5c7863;
+    color: #111111 !important;
     font-size: .9rem;
 }
 
 .report-title {
-    color: #125c2e;
+    color: #111111 !important;
     font-weight: 800;
     font-size: 1.15rem;
 }
@@ -142,7 +298,7 @@ st.markdown(
     padding: 5px 12px;
     border-radius: 999px;
     background: #e3f4e7;
-    color: #176b35;
+    color: #111111 !important;
     font-weight: 700;
     font-size: .85rem;
 }
@@ -157,8 +313,56 @@ div[data-testid="stFileUploader"] {
 .stButton > button {
     border-radius: 12px;
     font-weight: 700;
+    color: #111111 !important;
 }
 
+.stButton > button[kind="primary"] {
+    color: #111111 !important;
+}
+
+/* ===== SIDEBAR COLLAPSE / MỞ-ĐÓNG ===== */
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="stSidebarCollapsedControl"] button {
+    background: #dff3e3 !important;
+    border: 1px solid #a9d5b1 !important;
+    border-radius: 12px !important;
+    color: #111111 !important;
+}
+
+[data-testid="stSidebarCollapseButton"] svg,
+[data-testid="stSidebarCollapsedControl"] svg {
+    color: #111111 !important;
+    fill: #111111 !important;
+    stroke: #111111 !important;
+}
+
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="stSidebarCollapsedControl"] button {
+    font-size: 0 !important;
+}
+
+[data-testid="stSidebarCollapseButton"] button::before {
+    content: "‹";
+    font-size: 26px;
+    font-weight: 900;
+    line-height: 1;
+    color: #111111 !important;
+}
+
+[data-testid="stSidebarCollapsedControl"] button::before {
+    content: "›";
+    font-size: 26px;
+    font-weight: 900;
+    line-height: 1;
+    color: #111111 !important;
+}
+
+[data-testid="stSidebarCollapseButton"] svg,
+[data-testid="stSidebarCollapsedControl"] svg {
+    display: none !important;
+}
+
+/* ===== MOBILE ===== */
 @media (max-width: 768px) {
     .block-container {
         padding-left: .75rem;
@@ -187,12 +391,15 @@ div[data-testid="stFileUploader"] {
     .stat-number {
         font-size: 1.4rem;
     }
+
+    [data-testid="stSidebar"] > div:first-child {
+        padding: 12px 10px 18px 10px;
+    }
 }
 </style>
 """,
     unsafe_allow_html=True,
 )
-
 
 # =========================================================
 # 3. DATABASE
@@ -1419,13 +1626,22 @@ def sidebar_menu():
     with st.sidebar:
         st.markdown(
             """
-            <div style="
-                font-size:1.25rem;
-                font-weight:800;
-                margin-bottom:12px;
-            ">
-                🌱 Urban GreenEye AI
+            <div class="sidebar-brand">
+                <div class="sidebar-brand-row">
+                    <div class="sidebar-logo">UG</div>
+                    <div>
+                        <div class="sidebar-brand-title">Urban GreenEye AI</div>
+                        <div class="sidebar-brand-sub">Mắt Xanh Đô Thị</div>
+                    </div>
+                </div>
             </div>
+
+            <div class="sidebar-live">
+                <span class="sidebar-live-dot"></span>
+                Hệ thống AI đang hoạt động
+            </div>
+
+            <div class="sidebar-section-title">Điều hướng</div>
             """,
             unsafe_allow_html=True,
         )
@@ -1433,22 +1649,37 @@ def sidebar_menu():
         page = st.radio(
             "MENU",
             [
-                "📷 Gửi báo cáo",
-                "🧹 Đội dọn dẹp nhận nhiệm vụ",
-                "✅ Danh sách đã dọn",
-                "🏆 Bảng xếp hạng tích điểm",
-                "🛡️ Báo cáo Spam & Xóa",
-                "⚙️ Reset & Cài đặt AI",
+                "▣  Gửi báo cáo",
+                "◆  Đội dọn dẹp nhận nhiệm vụ",
+                "✓  Danh sách đã dọn",
+                "★  Bảng xếp hạng tích điểm",
+                "!  Báo cáo Spam & Xóa",
+                "⚙  Reset & Cài đặt AI",
             ],
+            label_visibility="collapsed",
         )
 
-        st.markdown("---")
-        st.caption(
-            "AI phân tích ảnh tự động sau khi người dân gửi báo cáo."
+        st.markdown(
+            """
+            <div class="sidebar-section-title">Hệ thống</div>
+            <div class="sidebar-info">
+                <b>AI Vision</b><br>
+                Tự động phân tích ảnh ngay sau khi gửi.<br><br>
+                <b>Bản đồ</b><br>
+                Hiển thị vị trí báo cáo và nhiệm vụ dọn dẹp.<br><br>
+                <b>Bảo vệ dữ liệu</b><br>
+                Báo cáo Spam tự động xóa sau 7 ngày.
+            </div>
+
+            <div class="sidebar-info" style="text-align:center; margin-top:10px;">
+                <b>URBAN GREENEYE</b><br>
+                Clean City • Green Future
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
     return page
-
 
 # =========================================================
 # 14. MAIN
@@ -1459,20 +1690,20 @@ show_stats()
 
 page = sidebar_menu()
 
-if page == "📷 Gửi báo cáo":
+if page == "▣  Gửi báo cáo":
     page_report()
 
-elif page == "🧹 Đội dọn dẹp nhận nhiệm vụ":
+elif page == "◆  Đội dọn dẹp nhận nhiệm vụ":
     page_cleanup_team()
 
-elif page == "✅ Danh sách đã dọn":
+elif page == "✓  Danh sách đã dọn":
     page_completed()
 
-elif page == "🏆 Bảng xếp hạng tích điểm":
+elif page == "★  Bảng xếp hạng tích điểm":
     page_leaderboard()
 
-elif page == "🛡️ Báo cáo Spam & Xóa":
+elif page == "!  Báo cáo Spam & Xóa":
     page_spam()
 
-elif page == "⚙️ Reset & Cài đặt AI":
+elif page == "⚙  Reset & Cài đặt AI":
     page_admin()
