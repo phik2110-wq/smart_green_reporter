@@ -244,24 +244,19 @@ def prepare_image(image_path, max_side=1024, quality=82):
 
 
 def parse_ai_text(raw_input):
-    """
-    Chuẩn hóa kết quả AI về một dict thống nhất.
-    AI phải phân biệt:
-    - Người/khuôn mặt/ảnh chân dung -> không phải rác
-    - Rác thực tế -> có rác
-    """
+def parse_ai_text(raw_input):
 
     if isinstance(raw_input, dict):
         data = raw_input
 
     else:
         text = str(raw_input or "").strip()
+        data = None
 
-        # Thử lấy JSON trong kết quả AI
         try:
             data = json.loads(text)
         except Exception:
-            data = None
+            pass
 
         if not isinstance(data, dict):
             start = text.find("{")
@@ -271,10 +266,10 @@ def parse_ai_text(raw_input):
                 try:
                     data = json.loads(text[start:end + 1])
                 except Exception:
-                    data = None
+                    pass
 
-        # Nếu AI không trả JSON
         if not isinstance(data, dict):
+
             upper = text.upper()
 
             negative_words = [
@@ -285,51 +280,79 @@ def parse_ai_text(raw_input):
                 "GƯƠNG MẶT",
                 "SELFIE",
                 "PORTRAIT",
-                "PERSON ONLY",
                 "NO WASTE",
-                "NO TRASH",
-                "CLEAN",
-                "KHÔNG PHẢI RÁC"
+                "NO TRASH"
             ]
 
             positive_words = [
-                "CÓ RÁC",
                 "RÁC THẢI",
+                "RÁC SINH HOẠT",
                 "BÃI RÁC",
                 "CHẤT THẢI",
-                "RÁC SINH HOẠT",
                 "TRASH",
                 "GARBAGE",
                 "WASTE",
-                "LITTER",
-                "DUMP"
+                "LITTER"
             ]
 
-            has_negative = any(x in upper for x in negative_words)
-            has_positive = any(x in upper for x in positive_words)
+            has_negative = any(
+                word in upper for word in negative_words
+            )
 
-            contains_waste = has_positive and not has_negative
+            has_positive = any(
+                word in upper for word in positive_words
+            )
+
+            contains_waste = (
+                has_positive and not has_negative
+            )
 
             data = {
                 "contains_waste": contains_waste,
                 "is_waste_amount_sufficient": contains_waste,
-                "severity": "Trung bình" if contains_waste else "Không có",
-                "waste_type": "Rác sinh hoạt" if contains_waste else "",
-                "visual_evidence": text[:500],
-                "spam_reason": "" if contains_waste else text[:300],
+                "natural_report": text,
+                "waste_type": "",
+                "severity": "",
+                "visual_evidence": text,
+                "spam_reason": text if not contains_waste else "",
                 "dispatch_plan": ""
             }
 
     return {
-        "contains_waste": bool(data.get("contains_waste", False)),
-        "is_waste_amount_sufficient": bool(
-            data.get("is_waste_amount_sufficient", False)
+        "contains_waste": bool(
+            data.get("contains_waste", False)
         ),
-        "severity": str(data.get("severity", "Không xác định")),
-        "waste_type": str(data.get("waste_type", "")),
-        "visual_evidence": str(data.get("visual_evidence", "")),
-        "spam_reason": str(data.get("spam_reason", "")),
-        "dispatch_plan": str(data.get("dispatch_plan", ""))
+
+        "is_waste_amount_sufficient": bool(
+            data.get(
+                "is_waste_amount_sufficient",
+                data.get("contains_waste", False)
+            )
+        ),
+
+        "natural_report": str(
+            data.get("natural_report", "")
+        ).strip(),
+
+        "waste_type": str(
+            data.get("waste_type", "")
+        ).strip(),
+
+        "severity": str(
+            data.get("severity", "")
+        ).strip(),
+
+        "visual_evidence": str(
+            data.get("visual_evidence", "")
+        ).strip(),
+
+        "spam_reason": str(
+            data.get("spam_reason", "")
+        ).strip(),
+
+        "dispatch_plan": str(
+            data.get("dispatch_plan", "")
+        ).strip()
     }
 def analyze_image_with_cloudflare(image_path):
     try:
@@ -349,50 +372,67 @@ def analyze_image_with_cloudflare(image_path):
         )
 
         prompt = """
-Bạn là AI kiểm định ảnh phản ánh môi trường đô thị.
+Bạn là hệ thống kiểm định ảnh phản ánh rác thải đô thị.
 
-NHIỆM VỤ:
-Phân tích chính xác hình ảnh và xác định hình ảnh có thực sự chứa
-RÁC THẢI / CHẤT THẢI / BÃI RÁC / RÁC BỊ ĐỔ BỎ hay không.
+Hãy kiểm tra hình ảnh một cách THẬN TRỌNG.
 
-QUY TẮC RẤT QUAN TRỌNG:
+MỤC TIÊU DUY NHẤT:
+Xác định xem trong ảnh có RÁC THẢI THỰC TẾ hay không.
 
-1. NGƯỜI KHÔNG PHẢI LÀ RÁC.
-2. KHUÔN MẶT KHÔNG PHẢI LÀ RÁC.
-3. ẢNH CHÂN DUNG KHÔNG PHẢI LÀ RÁC.
-4. ẢNH SELFIE KHÔNG PHẢI LÀ RÁC.
-5. Quần áo, tóc, cơ thể người không phải là rác.
-6. Nếu có người nhỏ ở phía xa nhưng cảnh vật có rác thực tế,
-   vẫn phải nhận diện rác.
-7. Không được từ chối ảnh chỉ vì trong ảnh có người.
-8. Chỉ kết luận CÓ RÁC khi nhìn thấy vật liệu/rác thải thực tế.
-9. Nếu không chắc chắn có rác thì kết luận KHÔNG CÓ RÁC.
-10. Không được suy đoán rác không nhìn thấy trong ảnh.
+QUY TẮC BẮT BUỘC:
 
-ĐÁNH GIÁ:
-- contains_waste: true/false
-- is_waste_amount_sufficient: true/false
-- severity: Mức độ rác
-- waste_type: Loại rác
-- visual_evidence: Những gì thực sự nhìn thấy
-- spam_reason: Lý do nếu không phải phản ánh rác hợp lệ
-- dispatch_plan: Tự đề xuất phương án xử lý dựa trên loại,
-  số lượng và quy mô rác thực tế nhìn thấy.
+- Người không phải là rác.
+- Khuôn mặt không phải là rác.
+- Ảnh chân dung không phải là ảnh rác.
+- Ảnh thẻ không phải là ảnh rác.
+- Ảnh selfie không phải là ảnh rác.
+- Quần áo đang mặc không phải là rác.
+- Tóc và cơ thể người không phải là rác.
+- Nếu ảnh chủ yếu là khuôn mặt hoặc một người và không nhìn thấy
+  rác thực tế, phải trả contains_waste = false.
+- Không được suy đoán rằng có rác chỉ vì ảnh có người.
+- Không được suy đoán rác nằm ngoài khung hình.
+- Chỉ đánh dấu có rác khi có vật thể rác/chất thải thực sự
+  nhìn thấy trong hình.
+- Nếu không chắc chắn, phải chọn false.
 
-QUAN TRỌNG:
-dispatch_plan phải do bạn tự quyết định dựa trên hình ảnh.
-Không sử dụng một phương án cố định cho mọi trường hợp.
+ĐẶC BIỆT:
+Nếu đây là ảnh chân dung như ảnh thẻ, ảnh hồ sơ hoặc selfie,
+và không nhìn thấy rác thực tế, chắc chắn phải trả false.
+
+Nếu có một người ở phía trước nhưng phía sau thực sự có rác,
+hãy bỏ qua người và kiểm tra phần môi trường phía sau.
+
+NẾU CÓ RÁC:
+Hãy mô tả loại rác, số lượng tương đối, vị trí nhìn thấy,
+mức độ và đề xuất xử lý phù hợp với chính hình ảnh đó.
+
+NẾU KHÔNG CÓ RÁC:
+Hãy giải thích tự nhiên tại sao ảnh không phải phản ánh rác hợp lệ.
+
+QUAN TRỌNG VỀ VĂN PHONG:
+Không được sử dụng câu trả lời theo mẫu cố định.
+Hãy viết natural_report bằng tiếng Việt tự nhiên,
+giống một nhân viên kiểm định đang nhận xét trực tiếp về ảnh.
+
+Không được viết:
+"Bố trí 2 công nhân và xe gom rác chuyên dụng."
+
+Không được dùng phương án xử lý cố định.
+
+Hãy tự quyết định nội dung dựa trên những gì thực sự nhìn thấy.
 
 CHỈ TRẢ VỀ JSON:
 
 {
-  "contains_waste": true,
-  "is_waste_amount_sufficient": true,
-  "severity": "Nhẹ/Trung bình/Nặng",
-  "waste_type": "...",
-  "visual_evidence": "...",
-  "spam_reason": "...",
-  "dispatch_plan": "..."
+    "contains_waste": true hoặc false,
+    "is_waste_amount_sufficient": true hoặc false,
+    "natural_report": "Một đoạn nhận xét tự nhiên bằng tiếng Việt.",
+    "waste_type": "Loại rác nếu có",
+    "severity": "Mức độ nếu có",
+    "visual_evidence": "Những gì thực sự nhìn thấy",
+    "spam_reason": "Lý do không hợp lệ nếu không có rác",
+    "dispatch_plan": "Phương án xử lý do AI tự đề xuất nếu có rác"
 }
 """
 
@@ -455,8 +495,8 @@ def save_ai_result(report_id, analysis):
 
     conn = get_conn()
 
-    # AI lỗi -> KHÔNG được coi là spam
     if not analysis.get("success"):
+
         conn.execute("""
             UPDATE reports
             SET status = ?,
@@ -466,13 +506,17 @@ def save_ai_result(report_id, analysis):
             WHERE id = ?
         """, (
             "Lỗi AI",
-            f"❌ AI chưa phân tích được: {analysis.get('error', 'Unknown error')}",
-            json.dumps(analysis, ensure_ascii=False),
+            "AI chưa thể phân tích hình ảnh.",
+            json.dumps(
+                analysis,
+                ensure_ascii=False
+            ),
             report_id
         ))
 
         conn.commit()
         conn.close()
+
         return False
 
     parsed = analysis.get("parsed", {})
@@ -482,34 +526,40 @@ def save_ai_result(report_id, analysis):
     )
 
     sufficient = bool(
-        parsed.get("is_waste_amount_sufficient", False)
+        parsed.get(
+            "is_waste_amount_sufficient",
+            contains_waste
+        )
     )
 
+    natural_report = parsed.get(
+        "natural_report",
+        ""
+    ).strip()
+
+    # Nếu AI không tạo được đoạn nhận xét
+    # thì dùng bằng chứng của AI làm fallback
+    if not natural_report:
+
+        if contains_waste:
+            natural_report = (
+                parsed.get(
+                    "visual_evidence",
+                    "AI phát hiện dấu hiệu rác thải trong hình ảnh."
+                )
+            )
+        else:
+            natural_report = (
+                parsed.get(
+                    "spam_reason",
+                    "AI không xác định được rác thải thực tế trong hình ảnh."
+                )
+            )
+
     if contains_waste and sufficient:
-
         status = "Đã duyệt"
-
-        ai_result = (
-            f"✅ Có rác\n"
-            f"Loại: {parsed.get('waste_type', 'Không xác định')}\n"
-            f"Mức độ: {parsed.get('severity', 'Không xác định')}\n\n"
-            f"📷 Bằng chứng hình ảnh:\n"
-            f"{parsed.get('visual_evidence', '')}\n\n"
-            f"🚛 Phương án xử lý do AI đề xuất:\n"
-            f"{parsed.get('dispatch_plan', '')}"
-        )
-
     else:
-
         status = "Spam/Từ chối"
-
-        ai_result = (
-            "❌ Không phải phản ánh rác hợp lệ.\n\n"
-            f"Lý do AI:\n"
-            f"{parsed.get('spam_reason', '')}\n\n"
-            f"Bằng chứng:\n"
-            f"{parsed.get('visual_evidence', '')}"
-        )
 
     conn.execute("""
         UPDATE reports
@@ -520,8 +570,11 @@ def save_ai_result(report_id, analysis):
         WHERE id = ?
     """, (
         status,
-        ai_result,
-        json.dumps(parsed, ensure_ascii=False),
+        natural_report,
+        json.dumps(
+            parsed,
+            ensure_ascii=False
+        ),
         report_id
     ))
 
