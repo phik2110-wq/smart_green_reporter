@@ -679,7 +679,156 @@ div[data-testid="stFileUploader"] section * {
         fill: #ffffff !important;
     }
 
-    </style>
+    
+/* =========================================================
+   FINAL GLOBAL THEME OVERRIDE — ÁP DỤNG TOÀN BỘ CÁC TRANG
+   Ô nhập: ĐEN + CHỮ TRẮNG | Nút: ĐEN + CHỮ TRẮNG
+   ========================================================= */
+.stApp div[data-baseweb="input"],
+.stApp div[data-baseweb="textarea"],
+.stApp div[data-baseweb="input"] > div,
+.stApp div[data-baseweb="textarea"] > div,
+.stApp input,
+.stApp textarea {
+    background-color: #111111 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border-color: #333333 !important;
+}
+
+.stApp input::placeholder,
+.stApp textarea::placeholder {
+    color: #cbd5e1 !important;
+    -webkit-text-fill-color: #cbd5e1 !important;
+    opacity: 1 !important;
+}
+
+.stApp input:focus,
+.stApp textarea:focus,
+.stApp div[data-baseweb="input"]:focus-within,
+.stApp div[data-baseweb="textarea"]:focus-within {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border-color: #000000 !important;
+    box-shadow: 0 0 0 1px #000000 !important;
+}
+
+/* Password eye / show-hide button: tách màu khỏi nền ô nhập */
+.stApp div[data-baseweb="input"] button {
+    background-color: #374151 !important;
+    border: 1px solid #4b5563 !important;
+    color: #ffffff !important;
+    border-radius: 0 8px 8px 0 !important;
+}
+.stApp div[data-baseweb="input"] button:hover {
+    background-color: #4b5563 !important;
+}
+.stApp div[data-baseweb="input"] button svg {
+    color: #ffffff !important;
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+}
+
+/* Selectbox / multiselect toàn hệ thống */
+.stApp div[data-baseweb="select"] > div {
+    background-color: #111111 !important;
+    color: #ffffff !important;
+    border-color: #333333 !important;
+}
+.stApp div[data-baseweb="select"] * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+.stApp div[data-baseweb="select"]:focus-within > div {
+    background-color: #000000 !important;
+    border-color: #000000 !important;
+}
+
+/* Menu dropdown */
+.stApp div[role="listbox"],
+.stApp div[role="option"] {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+}
+.stApp div[role="option"] * {
+    color: #111111 !important;
+    -webkit-text-fill-color: #111111 !important;
+}
+.stApp div[role="option"]:hover,
+.stApp div[role="option"][aria-selected="true"] {
+    background-color: #000000 !important;
+}
+.stApp div[role="option"]:hover * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+/* Tất cả button trên toàn app */
+.stApp button,
+.stButton > button,
+.stFormSubmitButton > button {
+    background-color: #111111 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border-color: #111111 !important;
+}
+.stApp button:hover,
+.stButton > button:hover,
+.stFormSubmitButton > button:hover {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border-color: #000000 !important;
+}
+
+/* File uploader button */
+.stApp div[data-testid="stFileUploader"] button,
+.stApp div[data-testid="stFileUploader"] button * {
+    background-color: #111111 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+/* Model AI / code box: luôn dễ đọc, không bị global color đè */
+.stApp div[data-testid="stCodeBlock"],
+.stApp div[data-testid="stCodeBlock"] pre,
+.stApp div[data-testid="stCodeBlock"] code,
+.stApp pre,
+.stApp pre code {
+    background-color: #f1f5f9 !important;
+    color: #111111 !important;
+    -webkit-text-fill-color: #111111 !important;
+    border-color: #cbd5e1 !important;
+}
+
+/* Checkbox / radio text */
+.stApp [data-testid="stCheckbox"] label,
+.stApp [data-testid="stRadio"] label,
+.stApp [data-testid="stToggle"] label {
+    color: #111111 !important;
+    -webkit-text-fill-color: #111111 !important;
+}
+
+/* Sidebar mở/đóng */
+button[data-testid="stSidebarCollapseButton"],
+button[data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="stSidebarCollapsedControl"] button {
+    background-color: #111111 !important;
+    color: #ffffff !important;
+    border: 1px solid #000000 !important;
+}
+button[data-testid="stSidebarCollapseButton"] svg,
+button[data-testid="stSidebarCollapsedControl"] svg,
+[data-testid="stSidebarCollapseButton"] svg,
+[data-testid="stSidebarCollapsedControl"] svg {
+    color: #ffffff !important;
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+}
+
+</style>
 """,
     unsafe_allow_html=True,
 )
@@ -1609,13 +1758,21 @@ def page_cleanup_team():
         type="password",
         key="team_pin_input",
     )
-    if st.button("→ Vào khu vực đội dọn dẹp", key="team_login", use_container_width=True):
+
+    if st.button(
+        "→ Vào khu vực đội dọn dẹp",
+        key="team_login",
+        use_container_width=True,
+    ):
         if unlock_with_pin(pin, "team_unlocked"):
             st.success("Đã mở quyền truy cập.")
         else:
             st.error("Mã PIN không đúng.")
 
-    if not st.session_state.get("team_unlocked", False) and not st.session_state.get("admin_full_access", False):
+    if (
+        not st.session_state.get("team_unlocked", False)
+        and not st.session_state.get("admin_full_access", False)
+    ):
         st.info("Nhập mã PIN rồi bấm nút để vào.")
         return
 
@@ -1625,162 +1782,184 @@ def page_cleanup_team():
     team_name = st.text_input(
         "Tên đội / thành viên",
         placeholder="Ví dụ: Đội Môi Trường A3",
+        key="cleanup_team_name",
     )
 
+    # -----------------------------------------------------
+    # NHIỆM VỤ CHỜ NHẬN
+    # -----------------------------------------------------
     approved = get_reports("Đã duyệt")
 
     if approved:
-        st.markdown("### 📌 Nhiệm vụ chờ nhận")
+        with st.container(border=True):
+            st.markdown("### 📌 NHIỆM VỤ CHỜ NHẬN")
+            st.caption(f"Có {len(approved)} nhiệm vụ đang chờ đội dọn dẹp nhận.")
 
-        for row in approved:
-            with st.container(border=True):
-                cols = st.columns([1, 1])
+            for row in approved:
+                with st.container(border=True):
+                    cols = st.columns([1, 1])
 
-                with cols[0]:
-                    st.markdown(f"**Báo cáo:** `{str(row['id'])[:8]}`")
-                    st.write(f"📍 {row['location'] or 'Chưa có địa chỉ'}")
-                    st.write(f"📝 {row['description'] or 'Không có mô tả'}")
+                    with cols[0]:
+                        st.markdown(f"**📋 Báo cáo:** `{str(row['id'])[:8]}`")
+                        st.write(f"📍 {row['location'] or 'Chưa có địa chỉ'}")
+                        st.write(f"📝 {row['description'] or 'Không có mô tả'}")
 
-                    if row["ai_raw_json"]:
-                        try:
-                            ai = json.loads(row["ai_raw_json"])
-                            st.write(
-                                f"🗑️ **Loại rác:** {ai.get('waste_type', '')}"
-                            )
-                            st.write(
-                                f"⚠️ **Mức độ:** {ai.get('severity', '')}"
-                            )
-                            st.write(
-                                f"🚚 **Phương án:** {ai.get('dispatch_plan', '')}"
-                            )
-                        except Exception:
-                            pass
+                        if row["ai_raw_json"]:
+                            try:
+                                ai = json.loads(row["ai_raw_json"])
+                                st.write(f"🗑️ **Loại rác:** {ai.get('waste_type', '')}")
+                                st.write(f"⚠️ **Mức độ:** {ai.get('severity', '')}")
+                                st.write(f"🚚 **Phương án:** {ai.get('dispatch_plan', '')}")
+                            except Exception:
+                                pass
 
-                    if st.button(
-                        "📌 Nhận nhiệm vụ",
-                        key=f"assign_{row['id']}",
-                        use_container_width=True,
-                    ):
-                        if not team_name.strip():
-                            st.error("Nhập tên đội trước.")
-                        else:
-                            conn = get_db()
-                            conn.execute(
-                                """
-                                UPDATE reports
-                                SET assigned_team = ?, status = 'Đang dọn'
-                                WHERE id = ?
-                                """,
-                                (team_name.strip(), row["id"]),
-                            )
-                            conn.commit()
-                            conn.close()
-                            st.rerun()
-
-                with cols[1]:
-                    if row["image_path"] and os.path.exists(row["image_path"]):
-                        st.image(
-                            row["image_path"],
+                        if st.button(
+                            "📌 Nhận nhiệm vụ",
+                            key=f"assign_{row['id']}",
                             use_container_width=True,
-                        )
+                        ):
+                            if not team_name.strip():
+                                st.error("Nhập tên đội trước.")
+                            else:
+                                conn = get_db()
+                                conn.execute(
+                                    """
+                                    UPDATE reports
+                                    SET assigned_team = ?, status = 'Đang dọn'
+                                    WHERE id = ? AND status = 'Đã duyệt'
+                                    """,
+                                    (team_name.strip(), row["id"]),
+                                )
+                                changed = conn.total_changes
+                                conn.commit()
+                                conn.close()
 
-                st.markdown("#### 📍 Vị trí trên bản đồ")
-                show_task_map(row)
+                                if changed:
+                                    st.success(
+                                        f"Đã nhận nhiệm vụ #{str(row['id'])[:8]}."
+                                    )
+                                st.rerun()
 
+                    with cols[1]:
+                        if row["image_path"] and os.path.exists(row["image_path"]):
+                            st.image(
+                                row["image_path"],
+                                caption="Ảnh hiện trường",
+                                use_container_width=True,
+                            )
+
+                    st.markdown("#### 📍 Vị trí trên bản đồ")
+                    show_task_map(row)
     else:
         st.info("Hiện chưa có nhiệm vụ mới đang chờ nhận.")
 
-    # Không return ở đây: nhiệm vụ đã nhận phải tiếp tục hiển thị
-    # để đội dọn dẹp tải ảnh sau khi dọn và gửi báo cáo hoàn thành.
+    # -----------------------------------------------------
+    # NHIỆM VỤ ĐÃ NHẬN — BÁO CÁO SAU DỌN DẸP
+    # -----------------------------------------------------
     active = get_reports("Đang dọn")
 
-    if active:
-        st.markdown("### 🧹 NHIỆM VỤ ĐÃ NHẬN — BÁO CÁO SAU DỌN DẸP")
-        st.caption("Tải ảnh hiện trường sau khi dọn, ghi chú kết quả rồi bấm 'Xác nhận đã dọn xong'.")
+    with st.container(border=True):
+        st.markdown("### 🧹 BÁO CÁO SAU DỌN DẸP")
+        st.caption(
+            "Các nhiệm vụ đã nhận sẽ xuất hiện tại đây. "
+            "Tải ảnh sau khi dọn và xác nhận hoàn thành."
+        )
 
-    else:
-        st.info("Bạn chưa nhận nhiệm vụ nào. Khi bấm 'Nhận nhiệm vụ', báo cáo sẽ xuất hiện ở khu vực 'Báo cáo sau dọn dẹp'.")
-
-    for row in active:
-        with st.container(border=True):
-            st.markdown(
-                f"**Đội:** {row['assigned_team'] or 'Chưa xác định'}"
+        if not active:
+            st.info(
+                "Chưa có nhiệm vụ đang dọn. Hãy bấm 'Nhận nhiệm vụ' ở phía trên."
             )
+        else:
+            st.success(f"Bạn đang có {len(active)} nhiệm vụ cần hoàn thành.")
 
-            if row["image_path"] and os.path.exists(row["image_path"]):
-                st.image(
-                    row["image_path"],
-                    caption="Ảnh trước khi dọn",
-                    use_container_width=True,
-                )
-
-            st.markdown("#### 📍 Vị trí nhiệm vụ")
-            show_task_map(row)
-
-            cleanup_photo = st.file_uploader(
-                "Ảnh sau khi dọn",
-                type=["jpg", "jpeg", "png", "webp"],
-                key=f"cleanup_photo_{row['id']}",
-            )
-
-            cleanup_note = st.text_area(
-                "Ghi chú hoàn thành",
-                key=f"cleanup_note_{row['id']}",
-            )
-
-            if st.button(
-                "✅ Xác nhận đã dọn xong",
-                key=f"finish_{row['id']}",
-                type="primary",
-                use_container_width=True,
-            ):
-                if not cleanup_photo:
-                    st.error("Cần tải ảnh sau khi dọn.")
-                    continue
-
-                try:
-                    prepared = prepare_image(cleanup_photo.getvalue())
-                    filename = f"{uuid.uuid4().hex}.jpg"
-                    cleanup_path = os.path.join(
-                        CLEANUP_DIR,
-                        filename,
+            for row in active:
+                with st.container(border=True):
+                    st.markdown(
+                        f"**📋 Báo cáo:** `{str(row['id'])[:8]}`  "
+                        f"| **👷 Đội:** {row['assigned_team'] or 'Chưa xác định'}"
                     )
 
-                    with open(cleanup_path, "wb") as file:
-                        file.write(prepared)
+                    cols = st.columns([1, 1])
 
-                    conn = get_db()
-                    conn.execute(
-                        """
-                        UPDATE reports
-                        SET status = 'Đã dọn',
-                            cleanup_image_path = ?,
-                            cleanup_note = ?,
-                            cleaned_at = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            cleanup_path,
-                            cleanup_note.strip(),
-                            datetime.datetime.now().isoformat(
-                                timespec="seconds"
-                            ),
-                            row["id"],
-                        ),
-                    )
-                    conn.commit()
-                    conn.close()
+                    with cols[0]:
+                        if row["image_path"] and os.path.exists(row["image_path"]):
+                            st.image(
+                                row["image_path"],
+                                caption="Ảnh trước khi dọn",
+                                use_container_width=True,
+                            )
 
-                    add_team_points(
-                        row["assigned_team"] or team_name,
-                        10,
-                    )
+                    with cols[1]:
+                        st.markdown("**📤 Ảnh sau khi dọn**")
+                        cleanup_photo = st.file_uploader(
+                            "Tải ảnh hiện trường sau khi dọn",
+                            type=["jpg", "jpeg", "png", "webp"],
+                            key=f"cleanup_photo_{row['id']}",
+                        )
 
-                    st.success("Đã ghi nhận hoàn thành nhiệm vụ.")
-                    st.rerun()
+                        cleanup_note = st.text_area(
+                            "📝 Ghi chú hoàn thành",
+                            placeholder="Ví dụ: Đã thu gom toàn bộ rác và vệ sinh khu vực.",
+                            key=f"cleanup_note_{row['id']}",
+                        )
 
-                except Exception as exc:
-                    st.error(f"Lỗi: {exc}")
+                        if st.button(
+                            "✅ Xác nhận đã dọn xong",
+                            key=f"finish_{row['id']}",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            if not cleanup_photo:
+                                st.error("Cần tải ảnh sau khi dọn.")
+                            else:
+                                try:
+                                    prepared = prepare_image(cleanup_photo.getvalue())
+                                    filename = f"{uuid.uuid4().hex}.jpg"
+                                    cleanup_path = os.path.join(
+                                        CLEANUP_DIR,
+                                        filename,
+                                    )
+
+                                    with open(cleanup_path, "wb") as file:
+                                        file.write(prepared)
+
+                                    conn = get_db()
+                                    conn.execute(
+                                        """
+                                        UPDATE reports
+                                        SET status = 'Đã dọn',
+                                            cleanup_image_path = ?,
+                                            cleanup_note = ?,
+                                            cleaned_at = ?
+                                        WHERE id = ?
+                                        """,
+                                        (
+                                            cleanup_path,
+                                            cleanup_note.strip(),
+                                            datetime.datetime.now().isoformat(
+                                                timespec="seconds"
+                                            ),
+                                            row["id"],
+                                        ),
+                                    )
+                                    conn.commit()
+                                    conn.close()
+
+                                    add_team_points(
+                                        row["assigned_team"] or team_name,
+                                        10,
+                                    )
+
+                                    st.success(
+                                        f"Đã hoàn thành báo cáo #{str(row['id'])[:8]}."
+                                    )
+                                    st.rerun()
+
+                                except Exception as exc:
+                                    st.error(f"Lỗi: {exc}")
+
+                    st.markdown("#### 📍 Vị trí nhiệm vụ")
+                    show_task_map(row)
 
 
 # =========================================================
@@ -1989,6 +2168,7 @@ def page_admin():
             "🔴 Chưa có CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
         )
 
+    st.markdown("### 🤖 Model AI Vision")
     st.code(
         f"Model: {CF_MODEL}",
         language="text",
@@ -2135,7 +2315,7 @@ def sidebar_menu():
             """
             <div class="sidebar-section-title">Hệ thống</div>
             <div class="sidebar-info">
-                <b>AI Vision</b><br>
+                <b>🤖 AI Vision</b><br>
                 Tự động phân tích ảnh ngay sau khi gửi.<br><br>
                 <b>Bản đồ</b><br>
                 Hiển thị vị trí báo cáo và nhiệm vụ dọn dẹp.<br><br>
