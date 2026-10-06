@@ -828,6 +828,102 @@ button[data-testid="stSidebarCollapsedControl"] svg,
     stroke: #ffffff !important;
 }
 
+
+/* ===== THỐNG KÊ: GỌN TRÊN ĐIỆN THOẠI ===== */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin: 8px 0 18px;
+}
+.stats-grid .stat-card {
+    margin: 0;
+    min-height: 118px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 12px;
+}
+.stats-grid .stat-icon {
+    font-size: 1.45rem;
+    line-height: 1;
+    margin-bottom: 5px;
+}
+.stats-grid .stat-number {
+    font-size: 1.55rem;
+    line-height: 1.05;
+}
+.stats-grid .stat-label {
+    font-size: .82rem;
+    margin-top: 5px;
+}
+
+/* Khung từng báo cáo trong khu vực dọn dẹp */
+.cleanup-report-card {
+    background: #ffffff;
+    border: 1px solid #b9dfc0;
+    border-radius: 18px;
+    padding: 14px;
+    margin: 12px 0;
+    box-shadow: 0 4px 14px rgba(30,100,45,.06);
+}
+.cleanup-report-card .cleanup-report-head {
+    background: #edf7ef;
+    border: 1px solid #c7e5cd;
+    border-radius: 12px;
+    padding: 9px 12px;
+    margin-bottom: 12px;
+    font-weight: 800;
+}
+
+@media (max-width: 700px) {
+    .block-container {
+        padding-left: .7rem !important;
+        padding-right: .7rem !important;
+        padding-top: .55rem !important;
+    }
+
+    .stats-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+
+    .stats-grid .stat-card {
+        min-height: 86px;
+        padding: 8px 5px;
+        border-radius: 14px;
+    }
+
+    .stats-grid .stat-icon {
+        font-size: 1.05rem;
+        margin-bottom: 3px;
+    }
+
+    .stats-grid .stat-number {
+        font-size: 1.25rem;
+    }
+
+    .stats-grid .stat-label {
+        font-size: .70rem;
+        line-height: 1.15;
+        margin-top: 3px;
+    }
+
+    .cleanup-report-card {
+        padding: 10px;
+        border-radius: 14px;
+        margin: 9px 0;
+    }
+
+    .cleanup-report-card .cleanup-report-head {
+        padding: 7px 9px;
+        margin-bottom: 8px;
+        font-size: .88rem;
+    }
+}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -1534,8 +1630,6 @@ def show_stats():
 
     conn.close()
 
-    cols = st.columns(4)
-
     stats = [
         ("📋", total, "Tổng báo cáo"),
         ("🤖", approved, "AI xác nhận"),
@@ -1543,18 +1637,19 @@ def show_stats():
         ("🧹", cleaned, "Đã dọn"),
     ]
 
-    for col, (icon, number, label) in zip(cols, stats):
-        with col:
-            st.markdown(
-                f"""
-                <div class="stat-card">
-                    <div>{icon}</div>
-                    <div class="stat-number">{number}</div>
-                    <div class="stat-label">{label}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    cards = "".join(
+        f"""<div class=\"stat-card\">
+            <div class=\"stat-icon\">{icon}</div>
+            <div class=\"stat-number\">{number}</div>
+            <div class=\"stat-label\">{label}</div>
+        </div>"""
+        for icon, number, label in stats
+    )
+
+    st.markdown(
+        f'<div class="stats-grid">{cards}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def show_task_map(row):
@@ -1875,8 +1970,11 @@ def page_cleanup_team():
             for row in active:
                 with st.container(border=True):
                     st.markdown(
-                        f"**📋 Báo cáo:** `{str(row['id'])[:8]}`  "
-                        f"| **👷 Đội:** {row['assigned_team'] or 'Chưa xác định'}"
+                        f"### 📋 Báo cáo `{str(row['id'])[:8]}`"
+                    )
+                    st.caption(
+                        f"👷 Đội phụ trách: {row['assigned_team'] or 'Chưa xác định'}  "
+                        f"• 📍 {row['location'] or 'Chưa có vị trí'}"
                     )
 
                     cols = st.columns([1, 1])
