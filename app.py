@@ -5,7 +5,6 @@ import base64
 import json
 import os
 import re
-import sqlite3
 import uuid
 
 import folium
@@ -26,10 +25,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-DB_FILE = "reports.db"
-UPLOAD_DIR = "uploaded_images"
-CLEANUP_DIR = "cleanup_images"
-
 CF_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct"
 MAX_IMAGE_MB = 10
 SPAM_RETENTION_DAYS = 7
@@ -46,6 +41,19 @@ def get_setting(name: str, default: str = "") -> str:
     except Exception:
         pass
     return os.getenv(name, default)
+
+
+# =========================================================
+# LƯU TRỮ BỀN VỮNG: SUPABASE POSTGRES + STORAGE
+# Không dùng SQLite/local files khi chạy trên Streamlit Community Cloud.
+# =========================================================
+SUPABASE_URL = get_setting("SUPABASE_URL").rstrip("/")
+SUPABASE_KEY = (
+    get_setting("SUPABASE_SERVICE_ROLE_KEY")
+    or get_setting("SUPABASE_SECRET_KEY")
+    or get_setting("SUPABASE_KEY")
+).strip()
+SUPABASE_BUCKET = get_setting("SUPABASE_BUCKET", "urban-greeneye")
 
 
 CF_ACCOUNT_ID = get_setting("CLOUDFLARE_ACCOUNT_ID")
@@ -73,8 +81,6 @@ def unlock_with_pin(pin: str, session_key: str) -> bool:
     return ok
 
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(CLEANUP_DIR, exist_ok=True)
 
 
 # =========================================================
@@ -877,6 +883,59 @@ button[data-testid="stSidebarCollapsedControl"] svg,
     font-weight: 800;
 }
 
+
+.cleanup-report-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: linear-gradient(90deg, #eaf8ee, #f8fffa);
+    border: 1px solid #b8dec1;
+    border-radius: 13px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    font-weight: 900;
+}
+.cleanup-status-pill {
+    background: #dff3e4;
+    border: 1px solid #9dd2aa;
+    border-radius: 999px;
+    padding: 4px 9px;
+    font-size: .72rem;
+    white-space: nowrap;
+}
+.cleanup-status-pill.active { background: #fff3cd; border-color: #e7c766; }
+.ranking-panel {
+    background: linear-gradient(135deg, #e8f7ec, #ffffff);
+    border: 1px solid #b8dec1;
+    border-radius: 18px;
+    padding: 16px 18px;
+    margin-bottom: 10px;
+}
+.ranking-panel-title { font-size: 1.15rem; font-weight: 900; }
+.ranking-panel-sub { font-size: .78rem; margin-top: 3px; opacity: .68; }
+.ranking-row {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    background: #ffffff;
+    border: 1px solid #d2e8d6;
+    border-radius: 14px;
+    padding: 10px 12px;
+    margin: 7px 0;
+    box-shadow: 0 2px 8px rgba(30,100,45,.045);
+}
+.ranking-rank { text-align: center; font-size: 1.18rem; }
+.rank-number {
+    display: inline-flex; width: 28px; height: 28px; align-items: center;
+    justify-content: center; border-radius: 50%; background: #edf5ef;
+    font-size: .78rem; font-weight: 900;
+}
+.ranking-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; }
+.ranking-points { font-weight: 900; white-space: nowrap; font-size: .95rem; }
+.ranking-points small { font-size: .72rem; opacity: .65; font-weight: 700; }
+
 @media (max-width: 700px) {
     .block-container {
         padding-left: .7rem !important;
@@ -922,6 +981,11 @@ button[data-testid="stSidebarCollapsedControl"] svg,
         margin-bottom: 8px;
         font-size: .88rem;
     }
+    .cleanup-report-head { padding: 8px 9px; font-size: .88rem; }
+    .cleanup-status-pill { font-size: .64rem; padding: 3px 7px; }
+    .ranking-panel { padding: 13px 12px; }
+    .ranking-row { grid-template-columns: 34px minmax(0, 1fr) auto; padding: 9px 8px; }
+
 }
 
 </style>
@@ -930,143 +994,260 @@ button[data-testid="stSidebarCollapsedControl"] svg,
 )
 
 # =========================================================
-# 3. DATABASE
+# 3. DATABASE + STORAGE (SUPABASE)
 # =========================================================
 
-def get_db():
-    conn = sqlite3.connect(DB_FILE, timeout=20)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 20000")
-    return conn
+def supabase_configured():
+    return bool(SUPABASE_URL and SUPABASE_KEY)
 
 
-def _table_columns(conn, table_name):
-    return {row["name"]: row for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
-
-
-def _ensure_points_table(conn, table_name):
-    """Tự sửa bảng điểm cũ nếu schema không còn đúng."""
-    cols = _table_columns(conn, table_name)
-    if not cols:
-        conn.execute(
-            f"CREATE TABLE IF NOT EXISTS {table_name} (name TEXT PRIMARY KEY, points INTEGER DEFAULT 0)"
+def _supabase_headers(extra=None):
+    if not supabase_configured():
+        raise RuntimeError(
+            "Chưa cấu hình SUPABASE_URL và SUPABASE_SERVICE_ROLE_KEY "
+            "(hoặc SUPABASE_SECRET_KEY)."
         )
-        return
-
-    required = {"name", "points"}
-    if required.issubset(cols.keys()):
-        return
-
-    # Giữ lại dữ liệu cũ nếu tìm được cột tên/điểm tương ứng.
-    old_name = next((c for c in ("name", "username", "user_name", "team_name") if c in cols), None)
-    old_points = next((c for c in ("points", "score", "total_points") if c in cols), None)
-    temp = f"{table_name}_new"
-    conn.execute(f"DROP TABLE IF EXISTS {temp}")
-    conn.execute(f"CREATE TABLE {temp} (name TEXT PRIMARY KEY, points INTEGER DEFAULT 0)")
-
-    if old_name and old_points:
-        rows = conn.execute(f"SELECT {old_name}, {old_points} FROM {table_name}").fetchall()
-        for r in rows:
-            if r[0] is not None:
-                try:
-                    pts = int(r[1] or 0)
-                except Exception:
-                    pts = 0
-                conn.execute(
-                    f"INSERT OR REPLACE INTO {temp}(name, points) VALUES (?, ?)",
-                    (str(r[0]), pts),
-                )
-
-    conn.execute(f"DROP TABLE {table_name}")
-    conn.execute(f"ALTER TABLE {temp} RENAME TO {table_name}")
-
-
-def init_db():
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS reports (
-            id TEXT PRIMARY KEY,
-            reporter_name TEXT,
-            image_path TEXT,
-            description TEXT,
-            location TEXT,
-            latitude REAL,
-            longitude REAL,
-            status TEXT DEFAULT 'Đang xử lý',
-            ai_result TEXT,
-            ai_raw_json TEXT,
-            ai_analyzed INTEGER DEFAULT 0,
-            ai_error TEXT,
-            assigned_team TEXT,
-            cleanup_image_path TEXT,
-            cleanup_note TEXT,
-            cleaned_at TEXT,
-            created_at TEXT
-        )
-        """
-    )
-
-    # Bổ sung cột còn thiếu cho database cũ.
-    columns = _table_columns(conn, "reports")
-    extra_columns = {
-        "reporter_name": "TEXT",
-        "image_path": "TEXT",
-        "description": "TEXT",
-        "location": "TEXT",
-        "latitude": "REAL",
-        "longitude": "REAL",
-        "status": "TEXT DEFAULT 'Đang xử lý'",
-        "ai_result": "TEXT",
-        "ai_raw_json": "TEXT",
-        "ai_analyzed": "INTEGER DEFAULT 0",
-        "ai_error": "TEXT",
-        "assigned_team": "TEXT",
-        "cleanup_image_path": "TEXT",
-        "cleanup_note": "TEXT",
-        "cleaned_at": "TEXT",
-        "created_at": "TEXT",
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
     }
-    for column, dtype in extra_columns.items():
-        if column not in columns:
-            cur.execute(f"ALTER TABLE reports ADD COLUMN {column} {dtype}")
+    if extra:
+        headers.update(extra)
+    return headers
 
-    _ensure_points_table(conn, "user_points")
-    _ensure_points_table(conn, "team_points")
 
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at)")
+def _supabase_data_url(table: str):
+    return f"{SUPABASE_URL}/rest/v1/{table}"
 
-    conn.commit()
-    conn.close()
+
+def _supabase_request(method, url, **kwargs):
+    headers = kwargs.pop("headers", {})
+    merged = _supabase_headers(headers)
+    try:
+        response = requests.request(
+            method,
+            url,
+            headers=merged,
+            timeout=30,
+            **kwargs,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Không kết nối được Supabase: {exc}") from exc
+
+    if not response.ok:
+        try:
+            detail = response.json()
+        except Exception:
+            detail = response.text
+        raise RuntimeError(
+            f"Supabase HTTP {response.status_code}: "
+            f"{json.dumps(detail, ensure_ascii=False)[:3000] if not isinstance(detail, str) else detail[:3000]}"
+        )
+
+    if not response.content:
+        return None
+    try:
+        return response.json()
+    except Exception:
+        return response.text
+
+
+def _supabase_select(table, params=None):
+    return _supabase_request(
+        "GET",
+        _supabase_data_url(table),
+        params=params or {"select": "*"},
+    ) or []
+
+
+def _supabase_insert(table, payload, return_rows=True):
+    headers = {"Prefer": "return=representation" if return_rows else "return=minimal"}
+    data = _supabase_request(
+        "POST",
+        _supabase_data_url(table),
+        headers=headers,
+        json=payload,
+    )
+    return data or []
+
+
+def _supabase_update(table, filters, payload):
+    params = {f"{key}": f"eq.{value}" for key, value in filters.items()}
+    params["select"] = "*"
+    return _supabase_request(
+        "PATCH",
+        _supabase_data_url(table),
+        params=params,
+        headers={"Prefer": "return=representation"},
+        json=payload,
+    ) or []
+
+
+def _supabase_delete_rows(table, filters):
+    params = {f"{key}": f"eq.{value}" for key, value in filters.items()}
+    return _supabase_request(
+        "DELETE",
+        _supabase_data_url(table),
+        params=params,
+        headers={"Prefer": "return=representation"},
+    ) or []
+
+
+def storage_upload(image_bytes: bytes, path: str):
+    """Upload ảnh vào Supabase Storage, không lưu ảnh lâu dài trên máy Streamlit."""
+    if not supabase_configured():
+        raise RuntimeError("Chưa cấu hình Supabase Storage.")
+
+    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{path.lstrip('/')}"
+    headers = _supabase_headers({
+        "Content-Type": "image/jpeg",
+        "x-upsert": "false",
+        "Cache-Control": "31536000",
+    })
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            data=image_bytes,
+            timeout=60,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Không tải ảnh lên Supabase Storage: {exc}") from exc
+
+    if not response.ok:
+        try:
+            detail = response.json()
+        except Exception:
+            detail = response.text
+        raise RuntimeError(
+            f"Storage upload HTTP {response.status_code}: "
+            f"{json.dumps(detail, ensure_ascii=False)[:2500] if not isinstance(detail, str) else detail[:2500]}"
+        )
+
+    return path.lstrip("/")
+
+
+def storage_public_url(path: str):
+    if not path:
+        return ""
+    if str(path).startswith("http://") or str(path).startswith("https://"):
+        return str(path)
+    from urllib.parse import quote
+    encoded_path = "/".join(quote(part, safe="") for part in str(path).strip("/").split("/"))
+    return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{encoded_path}"
+
+
+def storage_delete(path: str):
+    """Xóa object bằng Storage API, không xóa trực tiếp bảng storage.objects."""
+    if not path or str(path).startswith("http://") or str(path).startswith("https://"):
+        return
+    clean_path = str(path).strip("/")
+    if not clean_path:
+        return
+
+    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{clean_path}"
+    try:
+        response = requests.delete(
+            url,
+            headers=_supabase_headers(),
+            timeout=30,
+        )
+        if not response.ok and response.status_code != 404:
+            try:
+                detail = response.json()
+            except Exception:
+                detail = response.text
+            raise RuntimeError(
+                f"Storage delete HTTP {response.status_code}: "
+                f"{json.dumps(detail, ensure_ascii=False)[:2000] if not isinstance(detail, str) else detail[:2000]}"
+            )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Không xóa được ảnh trên Supabase Storage: {exc}") from exc
+
+
+def show_stored_image(path, caption=None):
+    """Hiển thị ảnh từ Supabase URL; fallback local chỉ để tương thích dữ liệu cũ."""
+    if not path:
+        return False
+    path = str(path)
+    if path.startswith("http://") or path.startswith("https://"):
+        st.image(path, caption=caption, use_container_width=True)
+        return True
+    if os.path.exists(path):
+        st.image(path, caption=caption, use_container_width=True)
+        return True
+    if supabase_configured():
+        try:
+            st.image(storage_public_url(path), caption=caption, use_container_width=True)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def download_stored_image(path: str):
+    if not path:
+        raise FileNotFoundError("Không có đường dẫn ảnh.")
+    path = str(path)
+    if path.startswith("http://") or path.startswith("https://"):
+        response = requests.get(path, timeout=30)
+        response.raise_for_status()
+        return response.content
+    if os.path.exists(path):
+        return open(path, "rb").read()
+    if not supabase_configured():
+        raise FileNotFoundError("Ảnh không còn trên máy và Supabase chưa được cấu hình.")
+    response = requests.get(storage_public_url(path), timeout=30)
+    response.raise_for_status()
+    return response.content
 
 
 def cleanup_expired_spam():
-    conn = get_db()
-    rows = conn.execute(
-        """
-        SELECT id, image_path, cleanup_image_path
-        FROM reports
-        WHERE status = 'Spam/Từ chối'
-          AND datetime(created_at) < datetime('now', ?)
-        """,
-        (f"-{SPAM_RETENTION_DAYS} days",),
-    ).fetchall()
+    if not supabase_configured():
+        return
+
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=SPAM_RETENTION_DAYS)
+    ).isoformat()
+
+    rows = _supabase_select(
+        "reports",
+        {
+            "select": "id,image_path,cleanup_image_path,created_at",
+            "status": "eq.Spam/Từ chối",
+            "created_at": f"lt.{cutoff}",
+        },
+    )
 
     for row in rows:
-        for path in [row["image_path"], row["cleanup_image_path"]]:
-            if path and os.path.exists(path):
+        for path in [row.get("image_path"), row.get("cleanup_image_path")]:
+            if path:
                 try:
-                    os.remove(path)
-                except OSError:
+                    storage_delete(path)
+                except Exception:
                     pass
+        _supabase_delete_rows("reports", {"id": row.get("id")})
 
-        conn.execute("DELETE FROM reports WHERE id = ?", (row["id"],))
 
-    conn.commit()
-    conn.close()
+def init_db():
+    """Supabase schema được tạo một lần bằng SQL trong Dashboard."""
+    if not supabase_configured():
+        st.error(
+            "🔴 Chưa cấu hình lưu trữ bền vững. Hãy thêm SUPABASE_URL và "
+            "SUPABASE_SERVICE_ROLE_KEY vào Streamlit Secrets."
+        )
+        st.stop()
+    # Không tạo bảng bằng SQL từ ứng dụng. Chỉ kiểm tra kết nối và schema.
+    try:
+        _supabase_select("reports", {"select": "id", "limit": "1"})
+    except Exception as exc:
+        st.error(
+            "❌ Supabase chưa sẵn sàng. Hãy chạy SQL schema được cung cấp kèm app "
+            f"trong Supabase SQL Editor. Chi tiết: {exc}"
+        )
+        st.stop()
 
 
 init_db()
@@ -1390,47 +1571,20 @@ def insert_report(
     latitude,
     longitude,
 ):
-    created_at = datetime.datetime.now().isoformat(timespec="seconds")
-    conn = get_db()
-
-    # Database cũ có thể dùng INTEGER PRIMARY KEY.
-    # Database mới dùng TEXT UUID. Tự nhận diện để tránh "datatype mismatch".
-    id_info = conn.execute("PRAGMA table_info(reports)").fetchall()
-    id_column = next((r for r in id_info if r["name"] == "id"), None)
-
-    if id_column and "INT" in (id_column["type"] or "").upper() and id_column["pk"] == 1:
-        cur = conn.execute(
-            """
-            INSERT INTO reports (
-                reporter_name, image_path, description, location,
-                latitude, longitude, status, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, 'Đang xử lý', ?)
-            """,
-            (
-                reporter_name, image_path, description, location,
-                latitude, longitude, created_at,
-            ),
-        )
-        report_id = str(cur.lastrowid)
-    else:
-        report_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO reports (
-                id, reporter_name, image_path, description, location,
-                latitude, longitude, status, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'Đang xử lý', ?)
-            """,
-            (
-                report_id, reporter_name, image_path, description, location,
-                latitude, longitude, created_at,
-            ),
-        )
-
-    conn.commit()
-    conn.close()
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    report_id = str(uuid.uuid4())
+    row = {
+        "id": report_id,
+        "reporter_name": reporter_name,
+        "image_path": image_path,
+        "description": description,
+        "location": location,
+        "latitude": latitude,
+        "longitude": longitude,
+        "status": "Đang xử lý",
+        "created_at": created_at,
+    }
+    _supabase_insert("reports", row, return_rows=False)
     return report_id
 
 
@@ -1441,140 +1595,107 @@ def save_ai_result(report_id, parsed, raw_data):
     )
 
     status = "Đã duyệt" if valid else "Spam/Từ chối"
-
     ai_result = parsed.get("natural_report", "")
 
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE reports
-        SET status = ?,
-            ai_result = ?,
-            ai_raw_json = ?,
-            ai_analyzed = 1,
-            ai_error = NULL
-        WHERE id = ?
-        """,
-        (
-            status,
-            ai_result,
-            json.dumps(
-                parsed,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            report_id,
-        ),
+    _supabase_update(
+        "reports",
+        {"id": report_id},
+        {
+            "status": status,
+            "ai_result": ai_result,
+            "ai_raw_json": json.dumps(parsed, ensure_ascii=False, indent=2),
+            "ai_analyzed": True,
+            "ai_error": None,
+        },
     )
-    conn.commit()
-    conn.close()
-
     return status
 
 
 def save_ai_error(report_id, error_text):
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE reports
-        SET status = 'Lỗi AI',
-            ai_analyzed = 0,
-            ai_error = ?
-        WHERE id = ?
-        """,
-        (error_text, report_id),
+    _supabase_update(
+        "reports",
+        {"id": report_id},
+        {
+            "status": "Lỗi AI",
+            "ai_analyzed": False,
+            "ai_error": str(error_text),
+        },
     )
-    conn.commit()
-    conn.close()
 
 
 def get_report(report_id):
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM reports WHERE id = ?",
-        (report_id,),
-    ).fetchone()
-    conn.close()
-    return row
+    rows = _supabase_select(
+        "reports",
+        {"select": "*", "id": f"eq.{report_id}", "limit": "1"},
+    )
+    return rows[0] if rows else None
 
 
 def get_reports(status=None):
-    conn = get_db()
-
+    params = {
+        "select": "*",
+        "order": "created_at.desc",
+    }
     if status:
-        rows = conn.execute(
-            """
-            SELECT * FROM reports
-            WHERE status = ?
-            ORDER BY datetime(created_at) DESC
-            """,
-            (status,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT * FROM reports
-            ORDER BY datetime(created_at) DESC
-            """
-        ).fetchall()
+        params["status"] = f"eq.{status}"
+    return _supabase_select("reports", params)
 
-    conn.close()
-    return rows
+
+def report_code(report_id):
+    """Mã báo cáo ngắn, đẹp; UUID thật vẫn giữ nguyên trong database."""
+    raw = re.sub(r"[^A-Fa-f0-9]", "", str(report_id or "")).upper()
+    return f"QL-{raw[:6]}" if raw else "QL-000000"
+
+
+def report_title(row):
+    return report_code(row.get("id"))
 
 
 def delete_report(report_id):
     row = get_report(report_id)
-
     if not row:
         return
 
-    for path in [row["image_path"], row["cleanup_image_path"]]:
-        if path and os.path.exists(path):
+    for path in [row.get("image_path"), row.get("cleanup_image_path")]:
+        if path:
             try:
-                os.remove(path)
-            except OSError:
+                storage_delete(path)
+            except Exception:
                 pass
 
-    conn = get_db()
-    conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
-    conn.commit()
-    conn.close()
+    _supabase_delete_rows("reports", {"id": report_id})
+
+
+def _add_points(table_name, name, points):
+    name = (name or "").strip()
+    if not name:
+        return
+
+    existing = _supabase_select(
+        table_name,
+        {"select": "name,points", "name": f"eq.{name}", "limit": "1"},
+    )
+    if existing:
+        current = int(existing[0].get("points") or 0)
+        _supabase_update(
+            table_name,
+            {"name": name},
+            {"points": current + int(points)},
+        )
+    else:
+        _supabase_insert(
+            table_name,
+            {"name": name, "points": int(points)},
+            return_rows=False,
+        )
 
 
 def add_team_points(name, points):
-    if not name.strip():
-        return
-
-    conn = get_db()
-    conn.execute(
-        """
-        INSERT INTO team_points(name, points)
-        VALUES (?, ?)
-        ON CONFLICT(name)
-        DO UPDATE SET points = points + excluded.points
-        """,
-        (name.strip(), points),
-    )
-    conn.commit()
-    conn.close()
+    _add_points("team_points", name, points)
 
 
 def add_user_points(name, points):
-    if not name.strip():
-        return
-
-    conn = get_db()
-    conn.execute(
-        """
-        INSERT INTO user_points(name, points)
-        VALUES (?, ?)
-        ON CONFLICT(name)
-        DO UPDATE SET points = points + excluded.points
-        """,
-        (name.strip(), points),
-    )
-    conn.commit()
-    conn.close()
+    _add_points("user_points", name, points)
 
 
 def parse_location_coordinates(location):
@@ -1615,20 +1736,11 @@ def show_header():
 
 
 def show_stats():
-    conn = get_db()
-
-    total = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
-    approved = conn.execute(
-        "SELECT COUNT(*) FROM reports WHERE status = 'Đã duyệt'"
-    ).fetchone()[0]
-    pending = conn.execute(
-        "SELECT COUNT(*) FROM reports WHERE status IN ('Đang xử lý', 'Lỗi AI')"
-    ).fetchone()[0]
-    cleaned = conn.execute(
-        "SELECT COUNT(*) FROM reports WHERE status = 'Đã dọn'"
-    ).fetchone()[0]
-
-    conn.close()
+    rows = _supabase_select("reports", {"select": "status"})
+    total = len(rows)
+    approved = sum(1 for row in rows if row.get("status") == "Đã duyệt")
+    pending = sum(1 for row in rows if row.get("status") in ("Đang xử lý", "Lỗi AI"))
+    cleaned = sum(1 for row in rows if row.get("status") == "Đã dọn")
 
     stats = [
         ("📋", total, "Tổng báo cáo"),
@@ -1638,18 +1750,11 @@ def show_stats():
     ]
 
     cards = "".join(
-        f"""<div class=\"stat-card\">
-            <div class=\"stat-icon\">{icon}</div>
-            <div class=\"stat-number\">{number}</div>
-            <div class=\"stat-label\">{label}</div>
-        </div>"""
+        f"""<div class=\"stat-card\">\n            <div class=\"stat-icon\">{icon}</div>\n            <div class=\"stat-number\">{number}</div>\n            <div class=\"stat-label\">{label}</div>\n        </div>"""
         for icon, number, label in stats
     )
 
-    st.markdown(
-        f'<div class="stats-grid">{cards}</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="stats-grid">{cards}</div>', unsafe_allow_html=True)
 
 
 def show_task_map(row):
@@ -1695,7 +1800,7 @@ def show_report_card(row):
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
     st.markdown(
-        f'<div class="report-title">📋 Báo cáo {str(row["id"])[:8]}</div>',
+        f'<div class="report-title">📋 Báo cáo #{report_title(row)}</div>',
         unsafe_allow_html=True,
     )
 
@@ -1712,8 +1817,8 @@ def show_report_card(row):
     if row["ai_result"]:
         st.info(f"🤖 {row['ai_result']}")
 
-    if row["image_path"] and os.path.exists(row["image_path"]):
-        st.image(row["image_path"], use_container_width=True)
+    if not show_stored_image(row["image_path"]):
+        st.caption("Không tải được ảnh hiện trường.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1790,20 +1895,26 @@ def page_report():
             raw = uploaded.getvalue()
             prepared = prepare_image(raw)
 
-            filename = f"{uuid.uuid4().hex}.jpg"
-            image_path = os.path.join(UPLOAD_DIR, filename)
+            report_id = str(uuid.uuid4())
+            image_path = f"reports/{report_id}.jpg"
+            storage_upload(prepared, image_path)
 
-            with open(image_path, "wb") as file:
-                file.write(prepared)
-
-            report_id = insert_report(
-                reporter_name=name.strip() or "Ẩn danh",
-                image_path=image_path,
-                description=description.strip(),
-                location=location.strip(),
-                latitude=latitude,
-                longitude=longitude,
-            )
+            try:
+                # Chỉ sau khi ảnh đã nằm trên Storage bền vững mới ghi bản ghi DB.
+                report_id = insert_report(
+                    reporter_name=name.strip() or "Ẩn danh",
+                    image_path=image_path,
+                    description=description.strip(),
+                    location=location.strip(),
+                    latitude=latitude,
+                    longitude=longitude,
+                )
+            except Exception:
+                try:
+                    storage_delete(image_path)
+                except Exception:
+                    pass
+                raise
 
             # Xác nhận đã gửi ngay sau khi DB nhận báo cáo.
             st.success(
@@ -1848,216 +1959,103 @@ def page_report():
 def page_cleanup_team():
     st.subheader("🧹 Đội dọn dẹp nhận nhiệm vụ")
 
-    pin = st.text_input(
-        "Mã PIN đội dọn dẹp",
-        type="password",
-        key="team_pin_input",
-    )
-
-    if st.button(
-        "→ Vào khu vực đội dọn dẹp",
-        key="team_login",
-        use_container_width=True,
-    ):
+    pin = st.text_input("Mã PIN đội dọn dẹp", type="password", key="team_pin_input")
+    if st.button("→ Vào khu vực đội dọn dẹp", key="team_login", use_container_width=True):
         if unlock_with_pin(pin, "team_unlocked"):
             st.success("Đã mở quyền truy cập.")
         else:
             st.error("Mã PIN không đúng.")
 
-    if (
-        not st.session_state.get("team_unlocked", False)
-        and not st.session_state.get("admin_full_access", False)
-    ):
+    if not st.session_state.get("team_unlocked", False) and not st.session_state.get("admin_full_access", False):
         st.info("Nhập mã PIN rồi bấm nút để vào.")
         return
 
-    if st.session_state.get("admin_full_access", False):
-        st.caption("🔐 Bạn đang truy cập bằng quyền quản trị toàn quyền.")
+    team_name = st.text_input("Tên đội / thành viên", placeholder="Ví dụ: Đội Môi Trường A3", key="cleanup_team_name")
 
-    team_name = st.text_input(
-        "Tên đội / thành viên",
-        placeholder="Ví dụ: Đội Môi Trường A3",
-        key="cleanup_team_name",
-    )
-
-    # -----------------------------------------------------
-    # NHIỆM VỤ CHỜ NHẬN
-    # -----------------------------------------------------
     approved = get_reports("Đã duyệt")
+    st.markdown("## 📌 Nhiệm vụ chờ nhận")
+    st.caption(f"{len(approved)} nhiệm vụ đang chờ đội dọn dẹp nhận.")
 
     if approved:
-        with st.container(border=True):
-            st.markdown("### 📌 NHIỆM VỤ CHỜ NHẬN")
-            st.caption(f"Có {len(approved)} nhiệm vụ đang chờ đội dọn dẹp nhận.")
-
-            for row in approved:
-                with st.container(border=True):
-                    cols = st.columns([1, 1])
-
-                    with cols[0]:
-                        st.markdown(f"**📋 Báo cáo:** `{str(row['id'])[:8]}`")
-                        st.write(f"📍 {row['location'] or 'Chưa có địa chỉ'}")
-                        st.write(f"📝 {row['description'] or 'Không có mô tả'}")
-
-                        if row["ai_raw_json"]:
-                            try:
-                                ai = json.loads(row["ai_raw_json"])
-                                st.write(f"🗑️ **Loại rác:** {ai.get('waste_type', '')}")
-                                st.write(f"⚠️ **Mức độ:** {ai.get('severity', '')}")
-                                st.write(f"🚚 **Phương án:** {ai.get('dispatch_plan', '')}")
-                            except Exception:
-                                pass
-
-                        if st.button(
-                            "📌 Nhận nhiệm vụ",
-                            key=f"assign_{row['id']}",
-                            use_container_width=True,
-                        ):
-                            if not team_name.strip():
-                                st.error("Nhập tên đội trước.")
-                            else:
-                                conn = get_db()
-                                conn.execute(
-                                    """
-                                    UPDATE reports
-                                    SET assigned_team = ?, status = 'Đang dọn'
-                                    WHERE id = ? AND status = 'Đã duyệt'
-                                    """,
-                                    (team_name.strip(), row["id"]),
-                                )
-                                changed = conn.total_changes
-                                conn.commit()
-                                conn.close()
-
-                                if changed:
-                                    st.success(
-                                        f"Đã nhận nhiệm vụ #{str(row['id'])[:8]}."
-                                    )
-                                st.rerun()
-
-                    with cols[1]:
-                        if row["image_path"] and os.path.exists(row["image_path"]):
-                            st.image(
-                                row["image_path"],
-                                caption="Ảnh hiện trường",
-                                use_container_width=True,
-                            )
-
-                    st.markdown("#### 📍 Vị trí trên bản đồ")
-                    show_task_map(row)
+        for row in approved:
+            code = report_title(row)
+            with st.container(border=True):
+                st.markdown(
+                    f"<div class='cleanup-report-head'><span>📋 BÁO CÁO #{code}</span><span class='cleanup-status-pill'>CHỜ NHẬN</span></div>",
+                    unsafe_allow_html=True,
+                )
+                cols = st.columns([0.95, 1.05])
+                with cols[0]:
+                    st.markdown(f"**📍 Địa điểm**  \\n{row['location'] or 'Chưa có địa chỉ'}")
+                    st.markdown(f"**📝 Nội dung**  \\n{row['description'] or 'Không có mô tả'}")
+                    if row.get("ai_raw_json"):
+                        try:
+                            ai = json.loads(row["ai_raw_json"])
+                            st.markdown(f"🗑️ **Loại rác:** {ai.get('waste_type', '') or 'Chưa xác định'}")
+                            st.markdown(f"⚠️ **Mức độ:** {ai.get('severity', '') or 'Chưa xác định'}")
+                            st.markdown(f"🚚 **Phương án:** {ai.get('dispatch_plan', '') or 'AI chưa đề xuất'}")
+                        except Exception:
+                            pass
+                    if st.button("📌 Nhận nhiệm vụ", key=f"assign_{row['id']}", use_container_width=True):
+                        if not team_name.strip():
+                            st.error("Nhập tên đội trước.")
+                        else:
+                            changed = _supabase_update("reports", {"id": row["id"], "status": "Đã duyệt"}, {"assigned_team": team_name.strip(), "status": "Đang dọn"})
+                            if changed:
+                                st.success(f"Đã nhận nhiệm vụ #{code}.")
+                            st.rerun()
+                with cols[1]:
+                    if not show_stored_image(row["image_path"], "Ảnh hiện trường"):
+                        st.caption("Không tải được ảnh hiện trường.")
+                st.markdown("#### 📍 Vị trí trên bản đồ")
+                show_task_map(row)
     else:
         st.info("Hiện chưa có nhiệm vụ mới đang chờ nhận.")
 
-    # -----------------------------------------------------
-    # NHIỆM VỤ ĐÃ NHẬN — BÁO CÁO SAU DỌN DẸP
-    # -----------------------------------------------------
     active = get_reports("Đang dọn")
+    st.markdown("## 🧹 Báo cáo sau dọn dẹp")
+    st.caption("Mỗi báo cáo được đặt trong một khung riêng để không bị rối khi có nhiều nhiệm vụ.")
 
-    with st.container(border=True):
-        st.markdown("### 🧹 BÁO CÁO SAU DỌN DẸP")
-        st.caption(
-            "Các nhiệm vụ đã nhận sẽ xuất hiện tại đây. "
-            "Tải ảnh sau khi dọn và xác nhận hoàn thành."
-        )
+    if not active:
+        st.info("Chưa có nhiệm vụ đang dọn. Hãy bấm 'Nhận nhiệm vụ' ở phía trên.")
+        return
 
-        if not active:
-            st.info(
-                "Chưa có nhiệm vụ đang dọn. Hãy bấm 'Nhận nhiệm vụ' ở phía trên."
+    st.success(f"Bạn đang có {len(active)} nhiệm vụ cần hoàn thành.")
+    for row in active:
+        code = report_title(row)
+        with st.container(border=True):
+            st.markdown(
+                f"<div class='cleanup-report-head'><span>🧹 BÁO CÁO #{code}</span><span class='cleanup-status-pill active'>ĐANG DỌN</span></div>",
+                unsafe_allow_html=True,
             )
-        else:
-            st.success(f"Bạn đang có {len(active)} nhiệm vụ cần hoàn thành.")
-
-            for row in active:
-                with st.container(border=True):
-                    st.markdown(
-                        f"### 📋 Báo cáo `{str(row['id'])[:8]}`"
-                    )
-                    st.caption(
-                        f"👷 Đội phụ trách: {row['assigned_team'] or 'Chưa xác định'}  "
-                        f"• 📍 {row['location'] or 'Chưa có vị trí'}"
-                    )
-
-                    cols = st.columns([1, 1])
-
-                    with cols[0]:
-                        if row["image_path"] and os.path.exists(row["image_path"]):
-                            st.image(
-                                row["image_path"],
-                                caption="Ảnh trước khi dọn",
-                                use_container_width=True,
-                            )
-
-                    with cols[1]:
-                        st.markdown("**📤 Ảnh sau khi dọn**")
-                        cleanup_photo = st.file_uploader(
-                            "Tải ảnh hiện trường sau khi dọn",
-                            type=["jpg", "jpeg", "png", "webp"],
-                            key=f"cleanup_photo_{row['id']}",
-                        )
-
-                        cleanup_note = st.text_area(
-                            "📝 Ghi chú hoàn thành",
-                            placeholder="Ví dụ: Đã thu gom toàn bộ rác và vệ sinh khu vực.",
-                            key=f"cleanup_note_{row['id']}",
-                        )
-
-                        if st.button(
-                            "✅ Xác nhận đã dọn xong",
-                            key=f"finish_{row['id']}",
-                            type="primary",
-                            use_container_width=True,
-                        ):
-                            if not cleanup_photo:
-                                st.error("Cần tải ảnh sau khi dọn.")
-                            else:
-                                try:
-                                    prepared = prepare_image(cleanup_photo.getvalue())
-                                    filename = f"{uuid.uuid4().hex}.jpg"
-                                    cleanup_path = os.path.join(
-                                        CLEANUP_DIR,
-                                        filename,
-                                    )
-
-                                    with open(cleanup_path, "wb") as file:
-                                        file.write(prepared)
-
-                                    conn = get_db()
-                                    conn.execute(
-                                        """
-                                        UPDATE reports
-                                        SET status = 'Đã dọn',
-                                            cleanup_image_path = ?,
-                                            cleanup_note = ?,
-                                            cleaned_at = ?
-                                        WHERE id = ?
-                                        """,
-                                        (
-                                            cleanup_path,
-                                            cleanup_note.strip(),
-                                            datetime.datetime.now().isoformat(
-                                                timespec="seconds"
-                                            ),
-                                            row["id"],
-                                        ),
-                                    )
-                                    conn.commit()
-                                    conn.close()
-
-                                    add_team_points(
-                                        row["assigned_team"] or team_name,
-                                        10,
-                                    )
-
-                                    st.success(
-                                        f"Đã hoàn thành báo cáo #{str(row['id'])[:8]}."
-                                    )
-                                    st.rerun()
-
-                                except Exception as exc:
-                                    st.error(f"Lỗi: {exc}")
-
-                    st.markdown("#### 📍 Vị trí nhiệm vụ")
-                    show_task_map(row)
+            st.caption(f"👷 Đội phụ trách: {row['assigned_team'] or 'Chưa xác định'}  •  📍 {row['location'] or 'Chưa có vị trí'}")
+            cols = st.columns(2)
+            with cols[0]:
+                st.markdown("**📷 Ảnh hiện trường**")
+                show_stored_image(row["image_path"], "Ảnh trước khi dọn")
+            with cols[1]:
+                st.markdown("**📤 Ảnh sau khi dọn**")
+                cleanup_photo = st.file_uploader("Tải ảnh hiện trường sau khi dọn", type=["jpg", "jpeg", "png", "webp"], key=f"cleanup_photo_{row['id']}")
+                cleanup_note = st.text_area("📝 Ghi chú hoàn thành", placeholder="Ví dụ: Đã thu gom toàn bộ rác và vệ sinh khu vực.", key=f"cleanup_note_{row['id']}")
+                if st.button("✅ Xác nhận đã dọn xong", key=f"finish_{row['id']}", type="primary", use_container_width=True):
+                    if not cleanup_photo:
+                        st.error("Cần tải ảnh sau khi dọn.")
+                    else:
+                        try:
+                            prepared = prepare_image(cleanup_photo.getvalue())
+                            cleanup_path = f"cleanup/{row['id']}_{uuid.uuid4().hex}.jpg"
+                            storage_upload(prepared, cleanup_path)
+                            updated = _supabase_update("reports", {"id": row["id"]}, {"status": "Đã dọn", "cleanup_image_path": cleanup_path, "cleanup_note": cleanup_note.strip(), "cleaned_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")})
+                            if not updated:
+                                storage_delete(cleanup_path)
+                                raise RuntimeError("Không cập nhật được trạng thái báo cáo trên Supabase.")
+                            add_team_points(row["assigned_team"] or team_name, 10)
+                            st.success(f"Đã hoàn thành báo cáo #{code}.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Lỗi: {exc}")
+            st.markdown("#### 📍 Vị trí nhiệm vụ")
+            show_task_map(row)
 
 
 # =========================================================
@@ -2079,22 +2077,13 @@ def page_completed():
 
             with cols[0]:
                 st.markdown("**Ảnh trước khi dọn**")
-                if row["image_path"] and os.path.exists(row["image_path"]):
-                    st.image(
-                        row["image_path"],
-                        use_container_width=True,
-                    )
+                if not show_stored_image(row["image_path"], "Ảnh trước khi dọn"):
+                    st.caption("Không tải được ảnh trước khi dọn.")
 
             with cols[1]:
                 st.markdown("**Ảnh sau khi dọn**")
-                if (
-                    row["cleanup_image_path"]
-                    and os.path.exists(row["cleanup_image_path"])
-                ):
-                    st.image(
-                        row["cleanup_image_path"],
-                        use_container_width=True,
-                    )
+                if not show_stored_image(row["cleanup_image_path"], "Ảnh sau khi dọn"):
+                    st.caption("Không tải được ảnh sau khi dọn.")
 
             st.write(
                 f"📍 **Vị trí:** {row['location'] or 'Chưa có'}"
@@ -2114,43 +2103,38 @@ def page_completed():
 # =========================================================
 
 def _read_points_table(table_name):
-    conn = get_db()
     try:
-        # Schema đã được init_db kiểm tra, nhưng vẫn giữ fallback để app không sập.
-        cols = _table_columns(conn, table_name)
-        if "name" not in cols or "points" not in cols:
-            return []
-        return conn.execute(
-            f"SELECT name, points FROM {table_name} ORDER BY points DESC, name ASC LIMIT 50"
-        ).fetchall()
-    except sqlite3.Error:
+        return _supabase_select(
+            table_name,
+            {"select": "name,points", "order": "points.desc,name.asc", "limit": "50"},
+        )
+    except Exception:
         return []
-    finally:
-        conn.close()
 
 
 def page_leaderboard():
     st.subheader("🏆 Bảng xếp hạng tích điểm")
+    st.caption("Điểm được lưu trực tiếp trên Supabase nên không mất khi Streamlit ngủ hoặc khởi động lại.")
+    users = _read_points_table("user_points")
+    teams = _read_points_table("team_points")
 
-    col1, col2 = st.columns(2)
+    def render_ranking(title, icon, rows):
+        st.markdown(f"<div class='ranking-panel'><div class='ranking-panel-title'>{icon} {title}</div><div class='ranking-panel-sub'>Top {min(len(rows), 10)} thành tích cao nhất</div></div>", unsafe_allow_html=True)
+        if not rows:
+            st.info("Chưa có dữ liệu điểm.")
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        for index, row in enumerate(rows[:10], 1):
+            medal = medals[index-1] if index <= 3 else f"<span class='rank-number'>{index}</span>"
+            name = str(row.get("name") or "Không tên")
+            points = int(row.get("points") or 0)
+            st.markdown(f"<div class='ranking-row'><div class='ranking-rank'>{medal}</div><div class='ranking-name'>{name}</div><div class='ranking-points'>{points:,} <small>điểm</small></div></div>", unsafe_allow_html=True)
 
-    with col1:
-        st.markdown("### 👤 Người dân")
-        users = _read_points_table("user_points")
-        if not users:
-            st.info("Chưa có người dân nào được cộng điểm.")
-        else:
-            for index, row in enumerate(users, 1):
-                st.write(f"**{index}. {row['name']}** — {row['points']} điểm")
-
-    with col2:
-        st.markdown("### 🧹 Đội dọn dẹp")
-        teams = _read_points_table("team_points")
-        if not teams:
-            st.info("Chưa có đội dọn dẹp nào được cộng điểm.")
-        else:
-            for index, row in enumerate(teams, 1):
-                st.write(f"**{index}. {row['name']}** — {row['points']} điểm")
+    left, right = st.columns(2)
+    with left:
+        render_ranking("Người dân", "👤", users)
+    with right:
+        render_ranking("Đội dọn dẹp", "🧹", teams)
 
 
 # =========================================================
@@ -2221,11 +2205,8 @@ def page_spam():
                 except Exception:
                     pass
 
-            if row["image_path"] and os.path.exists(row["image_path"]):
-                st.image(
-                    row["image_path"],
-                    use_container_width=True,
-                )
+            if not show_stored_image(row["image_path"]):
+                st.caption("Không tải được ảnh.")
 
             if st.button(
                 "🗑️ Xóa báo cáo này",
@@ -2302,9 +2283,7 @@ def page_admin():
                     key=f"retry_{row['id']}",
                 ):
                     try:
-                        with open(row["image_path"], "rb") as file:
-                            image_bytes = file.read()
-
+                        image_bytes = download_stored_image(row["image_path"])
                         prepared = prepare_image(image_bytes)
                         parsed, raw_ai = analyze_image_with_cloudflare(
                             prepared
@@ -2324,12 +2303,7 @@ def page_admin():
 
     st.markdown("### 📊 Thống kê")
 
-    conn = get_db()
-    total = conn.execute(
-        "SELECT COUNT(*) FROM reports"
-    ).fetchone()[0]
-    conn.close()
-
+    total = len(_supabase_select("reports", {"select": "id"}))
     st.write(f"Tổng số bản ghi: **{total}**")
 
     st.markdown("### ⚠️ Reset database")
@@ -2342,29 +2316,25 @@ def page_admin():
         "🗑️ RESET TOÀN BỘ DATABASE",
         disabled=not confirm,
     ):
-        conn = get_db()
-        rows = conn.execute(
-            "SELECT image_path, cleanup_image_path FROM reports"
-        ).fetchall()
+        rows = _supabase_select("reports", {"select": "id,image_path,cleanup_image_path"})
 
         for row in rows:
-            for path in [
-                row["image_path"],
-                row["cleanup_image_path"],
-            ]:
-                if path and os.path.exists(path):
+            for path in [row.get("image_path"), row.get("cleanup_image_path")]:
+                if path:
                     try:
-                        os.remove(path)
-                    except OSError:
+                        storage_delete(path)
+                    except Exception:
                         pass
 
-        conn.execute("DELETE FROM reports")
-        conn.execute("DELETE FROM user_points")
-        conn.execute("DELETE FROM team_points")
-        conn.commit()
-        conn.close()
+        # Xóa từng ID thực tế để reset chắc chắn.
+        for row in rows:
+            _supabase_delete_rows("reports", {"id": row["id"]})
+        for row in _supabase_select("user_points", {"select": "name"}):
+            _supabase_delete_rows("user_points", {"name": row["name"]})
+        for row in _supabase_select("team_points", {"select": "name"}):
+            _supabase_delete_rows("team_points", {"name": row["name"]})
 
-        st.success("Đã reset database.")
+        st.success("Đã reset database và Storage.")
         st.rerun()
 
 
