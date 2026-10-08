@@ -48,11 +48,12 @@ def get_setting(name: str, default: str = "") -> str:
 # Không dùng SQLite/local files khi chạy trên Streamlit Community Cloud.
 # =========================================================
 SUPABASE_URL = get_setting("SUPABASE_URL").rstrip("/")
-SUPABASE_KEY = (
-    get_setting("SUPABASE_SERVICE_ROLE_KEY")
-    or get_setting("SUPABASE_SECRET_KEY")
-    or get_setting("SUPABASE_KEY")
-).strip()
+# Ưu tiên key server-side có quyền cao. Không tự động dùng anon/publishable key
+# cho Storage vì key đó thường bị RLS chặn upload.
+SUPABASE_SERVICE_ROLE_KEY = get_setting("SUPABASE_SERVICE_ROLE_KEY").strip()
+SUPABASE_SECRET_KEY = get_setting("SUPABASE_SECRET_KEY").strip()
+SUPABASE_PUBLIC_KEY = get_setting("SUPABASE_KEY").strip()
+SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY or SUPABASE_PUBLIC_KEY
 SUPABASE_BUCKET = get_setting("SUPABASE_BUCKET", "urban-greeneye")
 
 
@@ -1001,6 +1002,10 @@ def supabase_configured():
     return bool(SUPABASE_URL and SUPABASE_KEY)
 
 
+def supabase_server_key_configured():
+    return bool(SUPABASE_URL and (SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY))
+
+
 def _supabase_headers(extra=None):
     if not supabase_configured():
         raise RuntimeError(
@@ -1095,9 +1100,15 @@ def _supabase_delete_rows(table, filters):
 
 
 def storage_upload(image_bytes: bytes, path: str):
-    """Upload ảnh vào Supabase Storage, không lưu ảnh lâu dài trên máy Streamlit."""
+    """Upload ảnh vào Supabase Storage. Ưu tiên server-side key để tránh lỗi RLS."""
     if not supabase_configured():
         raise RuntimeError("Chưa cấu hình Supabase Storage.")
+    if not supabase_server_key_configured():
+        raise RuntimeError(
+            "Supabase đang dùng key công khai/anon nên Storage bị RLS chặn. "
+            "Hãy thêm SUPABASE_SECRET_KEY (sb_secret_...) hoặc "
+            "SUPABASE_SERVICE_ROLE_KEY vào Streamlit Secrets."
+        )
 
     url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{path.lstrip('/')}"
     headers = _supabase_headers({
@@ -1120,9 +1131,16 @@ def storage_upload(image_bytes: bytes, path: str):
             detail = response.json()
         except Exception:
             detail = response.text
+        detail_text = json.dumps(detail, ensure_ascii=False) if not isinstance(detail, str) else detail
+        if response.status_code in (401, 403) and "row-level security" in detail_text.lower():
+            raise RuntimeError(
+                "Supabase Storage từ chối upload (RLS). "
+                "Hãy dùng SUPABASE_SECRET_KEY (sb_secret_...) hoặc SUPABASE_SERVICE_ROLE_KEY, "
+                "hoặc chạy policy Storage trong file Urban_GreenEye_supabase_schema.sql. "
+                f"Chi tiết: {detail_text[:1800]}"
+            )
         raise RuntimeError(
-            f"Storage upload HTTP {response.status_code}: "
-            f"{json.dumps(detail, ensure_ascii=False)[:2500] if not isinstance(detail, str) else detail[:2500]}"
+            f"Storage upload HTTP {response.status_code}: {detail_text[:2500]}"
         )
 
     return path.lstrip("/")
