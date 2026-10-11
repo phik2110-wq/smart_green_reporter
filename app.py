@@ -6,8 +6,10 @@ import json
 import os
 import re
 import uuid
+from html import escape
 
 import folium
+from folium.plugins import HeatMap, MarkerCluster
 import requests
 import streamlit as st
 from PIL import Image, ImageOps
@@ -1961,7 +1963,12 @@ def page_report():
                     return
 
             if status == "Đã duyệt":
-                add_user_points(name.strip() or "Ẩn danh", 5)
+                # Bảng xếp hạng được tính trực tiếp từ reports để không phụ thuộc
+                # vào việc ghi bảng điểm riêng có bị RLS chặn hay không.
+                try:
+                    add_user_points(name.strip() or "Ẩn danh", 5)
+                except Exception:
+                    pass
                 st.success("🤖 AI đã xác nhận đây là báo cáo rác hợp lệ.")
             else:
                 st.warning("⚠️ AI xác định ảnh không đủ bằng chứng về rác nên báo cáo được đưa vào Spam/Từ chối.")
@@ -2067,7 +2074,12 @@ def page_cleanup_team():
                             if not updated:
                                 storage_delete(cleanup_path)
                                 raise RuntimeError("Không cập nhật được trạng thái báo cáo trên Supabase.")
-                            add_team_points(row["assigned_team"] or team_name, 10)
+                            try:
+                                add_team_points(row["assigned_team"] or team_name, 10)
+                            except Exception:
+                                # Bảng xếp hạng được suy ra từ reports nên thao tác
+                                # hoàn thành không bị thất bại nếu bảng điểm riêng bị RLS chặn.
+                                pass
                             st.success(f"Đã hoàn thành báo cáo #{code}.")
                             st.rerun()
                         except Exception as exc:
@@ -2132,27 +2144,112 @@ def _read_points_table(table_name):
 
 def page_leaderboard():
     st.subheader("🏆 Bảng xếp hạng tích điểm")
-    st.caption("Điểm được lưu trực tiếp trên Supabase nên không mất khi Streamlit ngủ hoặc khởi động lại.")
-    users = _read_points_table("user_points")
-    teams = _read_points_table("team_points")
+    st.caption("Điểm được tính từ báo cáo đã lưu trên Supabase, giúp bảng xếp hạng vẫn đúng sau khi app khởi động lại.")
+
+    # Tính điểm từ bảng reports làm nguồn dữ liệu chính:
+    # mỗi báo cáo hợp lệ = 5 điểm cho người gửi; mỗi nhiệm vụ đã dọn = 10 điểm cho đội.
+    # Cách này khắc phục trường hợp reports đã hoàn thành nhưng user_points/team_points
+    # không được ghi do RLS hoặc chưa có dữ liệu điểm cũ.
+    try:
+        reports = get_reports()
+    except Exception as exc:
+        st.error(f"Không tải được báo cáo từ Supabase: {exc}")
+        return
+
+    user_totals = {}
+    team_totals = {}
+    valid_statuses = {"Đã duyệt", "Đang dọn", "Đã dọn"}
+    for report in reports:
+        status = str(report.get("status") or "")
+        reporter = str(report.get("reporter_name") or "Ẩn danh").strip() or "Ẩn danh"
+        if status in valid_statuses:
+            user_totals[reporter] = user_totals.get(reporter, 0) + 5
+        if status == "Đã dọn":
+            team = str(report.get("assigned_team") or "Chưa ghi tên đội").strip() or "Chưa ghi tên đội"
+            team_totals[team] = team_totals.get(team, 0) + 10
+
+    users = [{"name": name, "points": points} for name, points in user_totals.items()]
+    teams = [{"name": name, "points": points} for name, points in team_totals.items()]
+    users.sort(key=lambda x: (-x["points"], x["name"].casefold()))
+    teams.sort(key=lambda x: (-x["points"], x["name"].casefold()))
 
     def render_ranking(title, icon, rows):
-        st.markdown(f"<div class='ranking-panel'><div class='ranking-panel-title'>{icon} {title}</div><div class='ranking-panel-sub'>Top {min(len(rows), 10)} thành tích cao nhất</div></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='ranking-panel'><div class='ranking-panel-title'>{icon} {title}</div>"
+            f"<div class='ranking-panel-sub'>Top {min(len(rows), 10)} thành tích cao nhất</div></div>",
+            unsafe_allow_html=True,
+        )
         if not rows:
             st.info("Chưa có dữ liệu điểm.")
             return
         medals = ["🥇", "🥈", "🥉"]
         for index, row in enumerate(rows[:10], 1):
             medal = medals[index-1] if index <= 3 else f"<span class='rank-number'>{index}</span>"
-            name = str(row.get("name") or "Không tên")
+            name = escape(str(row.get("name") or "Không tên"))
             points = int(row.get("points") or 0)
-            st.markdown(f"<div class='ranking-row'><div class='ranking-rank'>{medal}</div><div class='ranking-name'>{name}</div><div class='ranking-points'>{points:,} <small>điểm</small></div></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='ranking-row'><div class='ranking-rank'>{medal}</div>"
+                f"<div class='ranking-name'>{name}</div>"
+                f"<div class='ranking-points'>{points:,} <small>điểm</small></div></div>",
+                unsafe_allow_html=True,
+            )
 
     left, right = st.columns(2)
     with left:
         render_ranking("Người dân", "👤", users)
     with right:
         render_ranking("Đội dọn dẹp", "🧹", teams)
+
+
+def page_hotspots():
+    st.subheader("🗺️ Bản đồ điểm nóng ô nhiễm")
+    st.caption("Bản đồ tổng hợp các báo cáo có tọa độ. Điểm nóng thể hiện nơi có nhiều báo cáo gần nhau; màu đỏ là chưa hoàn thành, màu xanh là đã dọn.")
+    try:
+        reports = get_reports()
+    except Exception as exc:
+        st.error(f"Không tải được dữ liệu bản đồ: {exc}")
+        return
+
+    points = []
+    for row in reports:
+        lat, lng = row.get("latitude"), row.get("longitude")
+        if lat is None or lng is None:
+            lat, lng = parse_location_coordinates(row.get("location"))
+        try:
+            lat, lng = float(lat), float(lng)
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                points.append((row, lat, lng))
+        except (TypeError, ValueError):
+            continue
+
+    if not points:
+        st.warning("Chưa có báo cáo nào có tọa độ hợp lệ. Hãy chọn vị trí trên bản đồ khi gửi báo cáo.")
+        return
+
+    avg_lat = sum(p[1] for p in points) / len(points)
+    avg_lng = sum(p[2] for p in points) / len(points)
+    fmap = folium.Map(location=[avg_lat, avg_lng], zoom_start=13, control_scale=True)
+    HeatMap([[lat, lng, 1.0 if row.get("status") != "Đã dọn" else 0.35] for row, lat, lng in points], radius=28, blur=20, min_opacity=0.25).add_to(fmap)
+    cluster = MarkerCluster(name="Các báo cáo").add_to(fmap)
+
+    for row, lat, lng in points:
+        status = str(row.get("status") or "Chưa rõ")
+        color = "green" if status == "Đã dọn" else ("orange" if status == "Đang dọn" else "red")
+        code = escape(report_title(row))
+        location = escape(str(row.get("location") or "Chưa có địa chỉ"))
+        description = escape(str(row.get("description") or "Không có mô tả"))
+        popup = folium.Popup(
+            f"<b>Báo cáo #{code}</b><br>Trạng thái: {escape(status)}<br>Địa điểm: {location}<br>Nội dung: {description}",
+            max_width=320,
+        )
+        folium.Marker(
+            [lat, lng], tooltip=f"#{code} · {status}", popup=popup,
+            icon=folium.Icon(color=color, icon="trash", prefix="fa"),
+        ).add_to(cluster)
+
+    folium.LayerControl(collapsed=True).add_to(fmap)
+    st_folium(fmap, width=None, height=560, returned_objects=[], key="greeneye_hotspots_map")
+    st.caption(f"Có {len(points)} báo cáo được hiển thị trên bản đồ; báo cáo thiếu tọa độ sẽ không xuất hiện.")
 
 
 # =========================================================
@@ -2390,6 +2487,7 @@ def sidebar_menu():
                 "▣  Gửi báo cáo",
                 "◆  Đội dọn dẹp nhận nhiệm vụ",
                 "✓  Danh sách đã dọn",
+                "🗺  Bản đồ điểm nóng",
                 "★  Bảng xếp hạng tích điểm",
                 "!  Báo cáo Spam & Xóa",
                 "⚙  Reset & Cài đặt AI",
@@ -2454,6 +2552,9 @@ elif page == "◆  Đội dọn dẹp nhận nhiệm vụ":
 elif page == "✓  Danh sách đã dọn":
     page_completed()
 
+elif page == "🗺  Bản đồ điểm nóng":
+    page_hotspots()
+
 elif page == "★  Bảng xếp hạng tích điểm":
     page_leaderboard()
 
@@ -2462,3 +2563,26 @@ elif page == "!  Báo cáo Spam & Xóa":
 
 elif page == "⚙  Reset & Cài đặt AI":
     page_admin()
+URBAN GREENEYE AI
+MẮT XANH ĐÔ THỊ
+TÓM TẮT DỰ ÁN
+1. Giới thiệu
+Urban GreenEye AI là ứng dụng web hỗ trợ tiếp nhận phản ánh ô nhiễm đô thị, dùng AI phân tích ảnh và kết nối người dân với đội dọn dẹp để theo dõi quá trình xử lý.
+2. Tính năng chính
+•	Gửi báo cáo: nhập thông tin, mô tả, ảnh hiện trường và vị trí.
+•	AI Vision: nhận diện rác, đánh giá mức độ ô nhiễm và đề xuất phương án xử lý.
+•	Quản lý nhiệm vụ: theo dõi trạng thái, giao/nhận nhiệm vụ và cập nhật kết quả.
+•	Đội dọn dẹp: tải ảnh sau dọn, ghi chú và xác nhận hoàn thành; mỗi báo cáo nằm trong khung riêng.
+•	Lịch sử và bản đồ: xem các điểm ô nhiễm, ảnh trước/sau và nhiệm vụ đã hoàn thành.
+•	Bảng xếp hạng: ghi nhận điểm đóng góp của người dân và đội dọn dẹp.
+•	Quản trị: quản lý báo cáo, kiểm tra kết quả AI và xử lý báo cáo spam.
+3. Công nghệ
+Python và Streamlit (giao diện); Cloudflare Workers AI (phân tích ảnh); Supabase PostgreSQL (dữ liệu); Supabase Storage (ảnh); Folium/OpenStreetMap (bản đồ).
+4. Quy trình hoạt động
+Người dân gửi ảnh và vị trí → AI phân tích → báo cáo hợp lệ được duyệt → đội dọn dẹp nhận nhiệm vụ → tải ảnh sau dọn và xác nhận hoàn thành → hệ thống lưu lịch sử và cập nhật điểm theo điều kiện.
+5. Lưu trữ dữ liệu
+Supabase được dùng để dữ liệu không phụ thuộc vào ổ đĩa tạm của Streamlit khi ứng dụng ngủ hoặc khởi động lại. Cần kiểm tra quyền RLS của bảng reports và quyền upload Storage; dự án từng gặp lỗi quyền, nên cần gửi thử báo cáo và khởi động lại ứng dụng để xác nhận dữ liệu vẫn còn.
+6. Cách sử dụng nhanh
+•	Người dân: nhập thông tin, chọn ảnh/vị trí và gửi báo cáo; chỉ coi là thành công khi ứng dụng xác nhận.
+•	Đội dọn dẹp: nhập PIN, nhận nhiệm vụ, tải ảnh sau dọn, ghi chú và xác nhận hoàn thành.
+•	Quản trị viên: đăng nhập bằng PIN để theo dõi báo cáo, trạng thái, lịch sử và bảng xếp hạng.
