@@ -2563,26 +2563,3 @@ elif page == "!  Báo cáo Spam & Xóa":
 
 elif page == "⚙  Reset & Cài đặt AI":
     page_admin()
-URBAN GREENEYE AI
-MẮT XANH ĐÔ THỊ
-TÓM TẮT DỰ ÁN
-1. Giới thiệu
-Urban GreenEye AI là ứng dụng web hỗ trợ tiếp nhận phản ánh ô nhiễm đô thị, dùng AI phân tích ảnh và kết nối người dân với đội dọn dẹp để theo dõi quá trình xử lý.
-2. Tính năng chính
-•	Gửi báo cáo: nhập thông tin, mô tả, ảnh hiện trường và vị trí.
-•	AI Vision: nhận diện rác, đánh giá mức độ ô nhiễm và đề xuất phương án xử lý.
-•	Quản lý nhiệm vụ: theo dõi trạng thái, giao/nhận nhiệm vụ và cập nhật kết quả.
-•	Đội dọn dẹp: tải ảnh sau dọn, ghi chú và xác nhận hoàn thành; mỗi báo cáo nằm trong khung riêng.
-•	Lịch sử và bản đồ: xem các điểm ô nhiễm, ảnh trước/sau và nhiệm vụ đã hoàn thành.
-•	Bảng xếp hạng: ghi nhận điểm đóng góp của người dân và đội dọn dẹp.
-•	Quản trị: quản lý báo cáo, kiểm tra kết quả AI và xử lý báo cáo spam.
-3. Công nghệ
-Python và Streamlit (giao diện); Cloudflare Workers AI (phân tích ảnh); Supabase PostgreSQL (dữ liệu); Supabase Storage (ảnh); Folium/OpenStreetMap (bản đồ).
-4. Quy trình hoạt động
-Người dân gửi ảnh và vị trí → AI phân tích → báo cáo hợp lệ được duyệt → đội dọn dẹp nhận nhiệm vụ → tải ảnh sau dọn và xác nhận hoàn thành → hệ thống lưu lịch sử và cập nhật điểm theo điều kiện.
-5. Lưu trữ dữ liệu
-Supabase được dùng để dữ liệu không phụ thuộc vào ổ đĩa tạm của Streamlit khi ứng dụng ngủ hoặc khởi động lại. Cần kiểm tra quyền RLS của bảng reports và quyền upload Storage; dự án từng gặp lỗi quyền, nên cần gửi thử báo cáo và khởi động lại ứng dụng để xác nhận dữ liệu vẫn còn.
-6. Cách sử dụng nhanh
-•	Người dân: nhập thông tin, chọn ảnh/vị trí và gửi báo cáo; chỉ coi là thành công khi ứng dụng xác nhận.
-•	Đội dọn dẹp: nhập PIN, nhận nhiệm vụ, tải ảnh sau dọn, ghi chú và xác nhận hoàn thành.
-•	Quản trị viên: đăng nhập bằng PIN để theo dõi báo cáo, trạng thái, lịch sử và bảng xếp hạng.
