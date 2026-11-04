@@ -84,8 +84,6 @@ def unlock_with_pin(pin: str, session_key: str) -> bool:
     return ok
 
 
-
-
 # =========================================================
 # 2. CSS
 # =========================================================
@@ -673,7 +671,7 @@ div[data-testid="stFileUploader"] section * {
         color: #111111 !important;
     }
 
-    
+
     /* Sidebar open/close control */
     button[data-testid="stSidebarCollapseButton"],
     button[data-testid="stSidebarCollapsedControl"] {
@@ -688,7 +686,7 @@ div[data-testid="stFileUploader"] section * {
         fill: #ffffff !important;
     }
 
-    
+
 /* =========================================================
    FINAL GLOBAL THEME OVERRIDE — ÁP DỤNG TOÀN BỘ CÁC TRANG
    Ô nhập: ĐEN + CHỮ TRẮNG | Nút: ĐEN + CHỮ TRẮNG
@@ -938,6 +936,28 @@ button[data-testid="stSidebarCollapsedControl"] svg,
 .ranking-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; }
 .ranking-points { font-weight: 900; white-space: nowrap; font-size: .95rem; }
 .ranking-points small { font-size: .72rem; opacity: .65; font-weight: 700; }
+
+/* ===== CHAT AI VỀ RÁC ===== */
+[data-testid="stChatMessage"] {
+    background: #ffffff;
+    border: 1px solid #b9dfc0;
+    border-radius: 16px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    box-shadow: 0 3px 10px rgba(30,100,45,.05);
+}
+[data-testid="stChatInput"] textarea {
+    background-color: #111111 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+[data-testid="stChatInput"] button {
+    background-color: #111111 !important;
+}
+[data-testid="stChatInput"] button svg {
+    fill: #ffffff !important;
+    color: #ffffff !important;
+}
 
 @media (max-width: 700px) {
     .block-container {
@@ -1215,7 +1235,8 @@ def download_stored_image(path: str):
         response.raise_for_status()
         return response.content
     if os.path.exists(path):
-        return open(path, "rb").read()
+        with open(path, "rb") as f:
+            return f.read()
     if not supabase_configured():
         raise FileNotFoundError("Ảnh không còn trên máy và Supabase chưa được cấu hình.")
     response = requests.get(storage_public_url(path), timeout=30)
@@ -1424,6 +1445,7 @@ def extract_json_object(text: str):
         f"Phản hồi nhận được: {text[:1200]}"
     )
 
+
 def normalize_bool(value):
     if isinstance(value, bool):
         return value
@@ -1577,6 +1599,78 @@ Lần trả lời trước (chỉ để tham khảo, không tin tuyệt đối):
                 "AI đã nhận được ảnh nhưng không trả về JSON hợp lệ sau 2 lần thử. "
                 f"Lần 1: {first_error}; Lần 2: {second_error}"
             ) from second_error
+
+
+# =========================================================
+# 4B. CHAT AI VỀ RÁC THẢI (CLOUDFLARE WORKERS AI)
+# =========================================================
+
+CHAT_SYSTEM_PROMPT = """Bạn là "Trợ lý Mắt Xanh", chuyên gia tư vấn phân loại và xử lý rác thải cho người dân TP. Biên Hòa, Đồng Nai.
+
+Nhiệm vụ:
+- Giải đáp về các loại rác: rác hữu cơ, tái chế (nhựa, giấy, kim loại, thủy tinh), rác vô cơ/không tái chế, rác nguy hại (pin, bóng đèn, thuốc hết hạn, hóa chất, dầu nhớt), rác điện tử, rác cồng kềnh, rác xây dựng.
+- Hướng dẫn cách phân loại, cách xử lý, tái sử dụng, giảm rác tại nguồn.
+- Hướng dẫn cách dùng app Urban GreenEye để báo cáo điểm rác.
+
+Quy tắc:
+- Luôn trả lời bằng tiếng Việt, ngắn gọn, dễ hiểu, thân thiện (tối đa khoảng 150 từ, dùng gạch đầu dòng khi cần).
+- Chỉ trả lời các chủ đề về rác thải, môi trường, vệ sinh đô thị. Câu hỏi ngoài chủ đề thì lịch sự từ chối và hướng người dùng quay lại chủ đề rác.
+- Không bịa số liệu, quy định hay lịch thu gom cụ thể của địa phương. Nếu không chắc, hãy nói rõ và khuyên liên hệ đơn vị thu gom/UBND phường.
+- Với rác nguy hại hoặc nguy cơ cháy nổ (pin lithium, bình gas, hóa chất), luôn nhắc an toàn và không tự ý đốt hay đổ bừa bãi.
+"""
+
+CHAT_MAX_HISTORY = 8             # số lượt hội thoại gần nhất gửi cho AI
+CHAT_MAX_INPUT = 500             # giới hạn ký tự mỗi câu hỏi
+CHAT_MAX_QUESTIONS_PER_SESSION = 30  # giới hạn số câu hỏi mỗi phiên để tiết kiệm quota
+
+
+def chat_with_cloudflare(history):
+    """history: list[{'role': 'user'|'assistant', 'content': str}]"""
+    if not cloudflare_configured():
+        raise RuntimeError(
+            "Chưa cấu hình CLOUDFLARE_ACCOUNT_ID và "
+            "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
+        )
+
+    messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+    messages.extend(history[-CHAT_MAX_HISTORY * 2:])
+
+    try:
+        response = requests.post(
+            cloudflare_url(),
+            headers={
+                "Authorization": f"Bearer {CF_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "messages": messages,
+                "max_tokens": 500,
+                "temperature": 0.4,
+            },
+            timeout=60,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Không kết nối được Cloudflare: {exc}") from exc
+
+    try:
+        data = response.json()
+    except Exception:
+        data = {}
+
+    if not response.ok or not data.get("success"):
+        detail = json.dumps(data, ensure_ascii=False)[:1500] if data else response.text[:1500]
+        raise RuntimeError(f"Cloudflare HTTP {response.status_code}: {detail}")
+
+    result = data.get("result", {})
+    if isinstance(result, dict):
+        text = result.get("response") or result.get("text") or ""
+    else:
+        text = str(result)
+
+    text = str(text).strip()
+    if not text:
+        raise RuntimeError("AI không trả về nội dung.")
+    return text
 
 
 # =========================================================
@@ -1770,7 +1864,11 @@ def show_stats():
     ]
 
     cards = "".join(
-        f"""<div class=\"stat-card\">\n            <div class=\"stat-icon\">{icon}</div>\n            <div class=\"stat-number\">{number}</div>\n            <div class=\"stat-label\">{label}</div>\n        </div>"""
+        f'<div class="stat-card">'
+        f'<div class="stat-icon">{icon}</div>'
+        f'<div class="stat-number">{number}</div>'
+        f'<div class="stat-label">{label}</div>'
+        f'</div>'
         for icon, number, label in stats
     )
 
@@ -1800,7 +1898,7 @@ def show_task_map(row):
         popup=folium.Popup(
             f"""
             <b>Vị trí báo cáo</b><br>
-            {row["location"] or "Không có địa chỉ"}
+            {escape(str(row["location"] or "Không có địa chỉ"))}
             """,
             max_width=320,
         ),
@@ -1830,7 +1928,7 @@ def show_report_card(row):
 
     status = row["status"] or "Không xác định"
     st.markdown(
-        f'<span class="status">{status}</span>',
+        f'<span class="status">{escape(str(status))}</span>',
         unsafe_allow_html=True,
     )
 
@@ -1978,6 +2076,93 @@ def page_report():
 
 
 # =========================================================
+# 7B. TRANG CHAT AI VỀ RÁC THẢI
+# =========================================================
+
+CHAT_GREETING = (
+    "Xin chào! 👋 Mình là **Trợ lý Mắt Xanh**. Bạn có thể hỏi mình về cách "
+    "phân loại và xử lý các loại rác như nhựa, giấy, pin, rác điện tử, rác hữu cơ..."
+)
+
+CHAT_SUGGESTIONS = [
+    "Pin cũ bỏ ở đâu?",
+    "Hộp xốp đựng đồ ăn có tái chế được không?",
+    "Cách phân loại rác tại nhà?",
+    "Dầu ăn thừa xử lý thế nào?",
+]
+
+
+def page_chatbot():
+    st.subheader("💬 Chat với AI về các loại rác")
+    st.caption("Hỏi nhanh về cách phân loại, xử lý và tái chế rác thải.")
+
+    if not cloudflare_configured():
+        st.error("🔴 Chưa cấu hình Cloudflare Workers AI nên chưa thể chat.")
+        return
+
+    if "chat_messages" not in st.session_state:
+        st.session_state["chat_messages"] = []
+
+    pending = st.session_state.pop("chat_pending", None)
+
+    top_cols = st.columns([4, 1])
+    with top_cols[1]:
+        if st.button("🧹 Xóa chat", use_container_width=True, key="chat_clear"):
+            st.session_state["chat_messages"] = []
+            st.rerun()
+
+    # Gợi ý nhanh khi chưa có hội thoại
+    if not st.session_state["chat_messages"]:
+        st.markdown("**Gợi ý nhanh:**")
+        sug_cols = st.columns(2)
+        for i, text in enumerate(CHAT_SUGGESTIONS):
+            with sug_cols[i % 2]:
+                if st.button(text, key=f"chat_sug_{i}", use_container_width=True):
+                    st.session_state["chat_pending"] = text
+                    st.rerun()
+
+    with st.chat_message("assistant", avatar="🌱"):
+        st.markdown(CHAT_GREETING)
+
+    for msg in st.session_state["chat_messages"]:
+        avatar = "🌱" if msg["role"] == "assistant" else "🧑"
+        with st.chat_message(msg["role"], avatar=avatar):
+            st.markdown(msg["content"])
+
+    user_text = st.chat_input("Nhập câu hỏi về rác thải...", key="chat_input_box")
+    user_text = pending or user_text
+
+    if not user_text:
+        return
+
+    user_text = user_text.strip()[:CHAT_MAX_INPUT]
+    if not user_text:
+        return
+
+    asked = sum(1 for m in st.session_state["chat_messages"] if m["role"] == "user")
+    if asked >= CHAT_MAX_QUESTIONS_PER_SESSION:
+        st.warning(
+            f"Bạn đã đạt giới hạn {CHAT_MAX_QUESTIONS_PER_SESSION} câu hỏi trong phiên này. "
+            "Hãy bấm **Xóa chat** để bắt đầu cuộc trò chuyện mới."
+        )
+        return
+
+    st.session_state["chat_messages"].append({"role": "user", "content": user_text})
+    with st.chat_message("user", avatar="🧑"):
+        st.markdown(user_text)
+
+    with st.chat_message("assistant", avatar="🌱"):
+        with st.spinner("AI đang trả lời..."):
+            try:
+                answer = chat_with_cloudflare(st.session_state["chat_messages"])
+            except Exception as exc:
+                answer = f"⚠️ Xin lỗi, mình chưa trả lời được lúc này. ({exc})"
+        st.markdown(answer)
+
+    st.session_state["chat_messages"].append({"role": "assistant", "content": answer})
+
+
+# =========================================================
 # 8. ĐỘI DỌN DẸP
 # =========================================================
 
@@ -2011,8 +2196,8 @@ def page_cleanup_team():
                 )
                 cols = st.columns([0.95, 1.05])
                 with cols[0]:
-                    st.markdown(f"**📍 Địa điểm**  \\n{row['location'] or 'Chưa có địa chỉ'}")
-                    st.markdown(f"**📝 Nội dung**  \\n{row['description'] or 'Không có mô tả'}")
+                    st.markdown(f"**📍 Địa điểm**  \n{row['location'] or 'Chưa có địa chỉ'}")
+                    st.markdown(f"**📝 Nội dung**  \n{row['description'] or 'Không có mô tả'}")
                     if row.get("ai_raw_json"):
                         try:
                             ai = json.loads(row["ai_raw_json"])
@@ -2457,6 +2642,16 @@ def page_admin():
 # 13. SIDEBAR
 # =========================================================
 
+MENU_REPORT = "▣  Gửi báo cáo"
+MENU_CHAT = "💬  Chat AI về rác"
+MENU_CLEANUP = "◆  Đội dọn dẹp nhận nhiệm vụ"
+MENU_COMPLETED = "✓  Danh sách đã dọn"
+MENU_HOTSPOTS = "🗺  Bản đồ điểm nóng"
+MENU_LEADERBOARD = "★  Bảng xếp hạng tích điểm"
+MENU_SPAM = "!  Báo cáo Spam & Xóa"
+MENU_ADMIN = "⚙  Reset & Cài đặt AI"
+
+
 def sidebar_menu():
     with st.sidebar:
         st.markdown(
@@ -2484,13 +2679,14 @@ def sidebar_menu():
         page = st.radio(
             "MENU",
             [
-                "▣  Gửi báo cáo",
-                "◆  Đội dọn dẹp nhận nhiệm vụ",
-                "✓  Danh sách đã dọn",
-                "🗺  Bản đồ điểm nóng",
-                "★  Bảng xếp hạng tích điểm",
-                "!  Báo cáo Spam & Xóa",
-                "⚙  Reset & Cài đặt AI",
+                MENU_REPORT,
+                MENU_CHAT,
+                MENU_CLEANUP,
+                MENU_COMPLETED,
+                MENU_HOTSPOTS,
+                MENU_LEADERBOARD,
+                MENU_SPAM,
+                MENU_ADMIN,
             ],
             label_visibility="collapsed",
         )
@@ -2501,6 +2697,8 @@ def sidebar_menu():
             <div class="sidebar-info">
                 <b>🤖 AI Vision</b><br>
                 Tự động phân tích ảnh ngay sau khi gửi.<br><br>
+                <b>💬 Chat AI</b><br>
+                Hỏi đáp cách phân loại và xử lý các loại rác.<br><br>
                 <b>Bản đồ</b><br>
                 Hiển thị vị trí báo cáo và nhiệm vụ dọn dẹp.<br><br>
                 <b>Bảo vệ dữ liệu</b><br>
@@ -2516,6 +2714,7 @@ def sidebar_menu():
         )
 
     return page
+
 
 # =========================================================
 # 14. MAIN
@@ -2543,23 +2742,26 @@ elif _previous_page != page:
         st.session_state.pop(_key, None)
     st.session_state["current_menu"] = page
 
-if page == "▣  Gửi báo cáo":
+if page == MENU_REPORT:
     page_report()
 
-elif page == "◆  Đội dọn dẹp nhận nhiệm vụ":
+elif page == MENU_CHAT:
+    page_chatbot()
+
+elif page == MENU_CLEANUP:
     page_cleanup_team()
 
-elif page == "✓  Danh sách đã dọn":
+elif page == MENU_COMPLETED:
     page_completed()
 
-elif page == "🗺  Bản đồ điểm nóng":
+elif page == MENU_HOTSPOTS:
     page_hotspots()
 
-elif page == "★  Bảng xếp hạng tích điểm":
+elif page == MENU_LEADERBOARD:
     page_leaderboard()
 
-elif page == "!  Báo cáo Spam & Xóa":
+elif page == MENU_SPAM:
     page_spam()
 
-elif page == "⚙  Reset & Cài đặt AI":
+elif page == MENU_ADMIN:
     page_admin()
