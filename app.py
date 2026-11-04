@@ -1756,7 +1756,7 @@ Lần trả lời trước (chỉ để tham khảo, không tin tuyệt đối):
 #   4) Bộ lọc đầu ra: nếu câu trả lời lộ nội dung hướng dẫn nội bộ thì thay bằng câu từ chối.
 #   5) Giới hạn tốc độ + khóa phiên sau nhiều lần vi phạm.
 
-CHAT_SYSTEM_PROMPT = """Bạn là "Trợ lý Mắt Xanh", trợ lý tư vấn về rác thải cho người dân TP. Biên Hòa, Đồng Nai trong ứng dụng Urban GreenEye.
+CHAT_SYSTEM_PROMPT = """Bạn là "Trợ lý Mắt Xanh", trợ lý tư vấn về rác thải cho người dân Đồng Nai trong ứng dụng Urban GreenEye.
 
 PHẠM VI DUY NHẤT:
 - Cách phân loại và xử lý các loại rác: hữu cơ, tái chế (nhựa, giấy, kim loại, thủy tinh), vô cơ, nguy hại (pin, bóng đèn, thuốc hết hạn, hóa chất, dầu nhớt), điện tử, cồng kềnh, xây dựng.
