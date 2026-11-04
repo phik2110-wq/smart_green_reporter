@@ -1011,6 +1011,136 @@ button[data-testid="stSidebarCollapsedControl"] svg,
 
 }
 
+/* =========================================================
+   GIAO DIỆN MENU MỚI: NÚT MỞ/ĐÓNG TO + MENU CHIA NHÓM
+   ========================================================= */
+@keyframes ug-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(23,107,53,.55), 0 6px 18px rgba(0,0,0,.25); }
+    70%  { box-shadow: 0 0 0 16px rgba(23,107,53,0), 0 6px 18px rgba(0,0,0,.25); }
+    100% { box-shadow: 0 0 0 0 rgba(23,107,53,0), 0 6px 18px rgba(0,0,0,.25); }
+}
+
+/* --- Nút MỞ menu ở màn hình chính: to, màu xanh, có hiệu ứng nhấp nháy --- */
+.stApp [data-testid="stSidebarCollapsedControl"],
+.stApp [data-testid="stExpandSidebarButton"] {
+    position: fixed !important;
+    top: 10px !important;
+    left: 10px !important;
+    z-index: 999999 !important;
+}
+.stApp [data-testid="stSidebarCollapsedControl"] button,
+.stApp button[data-testid="stExpandSidebarButton"],
+.stApp [data-testid="stExpandSidebarButton"] button {
+    width: auto !important;
+    min-width: 128px !important;
+    height: 54px !important;
+    padding: 0 22px !important;
+    border-radius: 999px !important;
+    background: #176b35 !important;
+    background-color: #176b35 !important;
+    border: 2px solid #ffffff !important;
+    font-size: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    animation: ug-pulse 2.2s infinite;
+}
+.stApp [data-testid="stSidebarCollapsedControl"] button > *,
+.stApp [data-testid="stExpandSidebarButton"] > *,
+.stApp [data-testid="stExpandSidebarButton"] button > * {
+    display: none !important;
+}
+.stApp [data-testid="stSidebarCollapsedControl"] button::before {
+    content: none !important;
+}
+.stApp [data-testid="stSidebarCollapsedControl"] button::after,
+.stApp button[data-testid="stExpandSidebarButton"]::after,
+.stApp [data-testid="stExpandSidebarButton"] button::after {
+    content: "☰  MENU" !important;
+    font-size: 18px !important;
+    font-weight: 900 !important;
+    letter-spacing: .05em;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    display: inline-block !important;
+}
+
+/* --- Nút ĐÓNG menu trong sidebar --- */
+.stApp [data-testid="stSidebarCollapseButton"] button {
+    width: auto !important;
+    height: 44px !important;
+    padding: 0 18px !important;
+    border-radius: 999px !important;
+    font-size: 0 !important;
+}
+.stApp [data-testid="stSidebarCollapseButton"] button > * {
+    display: none !important;
+}
+.stApp [data-testid="stSidebarCollapseButton"] button::before {
+    content: "✕  Đóng" !important;
+    font-size: 15px !important;
+    font-weight: 800 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+/* Chừa chỗ phía trên cho nút MENU to */
+.block-container {
+    padding-top: 4.6rem !important;
+}
+
+/* --- Tiêu đề nhóm trong sidebar --- */
+[data-testid="stSidebar"] .sidebar-group-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: .74rem;
+    font-weight: 900;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: #2f5a3a !important;
+    margin: 20px 2px 8px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid #a9d5b1;
+}
+
+/* --- Các nút menu trong sidebar --- */
+[data-testid="stSidebar"] .stButton > button {
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    border: 1px solid #b5dcbc !important;
+    border-radius: 14px !important;
+    min-height: 50px !important;
+    padding: 10px 14px !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+    box-shadow: 0 2px 6px rgba(35,105,50,.06) !important;
+}
+[data-testid="stSidebar"] .stButton > button * {
+    color: #111111 !important;
+    -webkit-text-fill-color: #111111 !important;
+    font-size: 1rem !important;
+    font-weight: 700 !important;
+    text-align: left !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: #eaf8ee !important;
+    border-color: #8dc59a !important;
+}
+
+/* Mục đang chọn: nền xanh đậm, chữ trắng */
+[data-testid="stSidebar"] .stButton button[data-testid="stBaseButton-primary"],
+[data-testid="stSidebar"] .stButton button[kind="primary"] {
+    background: #176b35 !important;
+    background-color: #176b35 !important;
+    border-color: #176b35 !important;
+}
+[data-testid="stSidebar"] .stButton button[data-testid="stBaseButton-primary"] *,
+[data-testid="stSidebar"] .stButton button[kind="primary"] * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -2642,17 +2772,40 @@ def page_admin():
 # 13. SIDEBAR
 # =========================================================
 
-MENU_REPORT = "▣  Gửi báo cáo"
+MENU_REPORT = "📷  Gửi báo cáo"
 MENU_CHAT = "💬  Chat AI về rác"
-MENU_CLEANUP = "◆  Đội dọn dẹp nhận nhiệm vụ"
-MENU_COMPLETED = "✓  Danh sách đã dọn"
-MENU_HOTSPOTS = "🗺  Bản đồ điểm nóng"
-MENU_LEADERBOARD = "★  Bảng xếp hạng tích điểm"
-MENU_SPAM = "!  Báo cáo Spam & Xóa"
-MENU_ADMIN = "⚙  Reset & Cài đặt AI"
+MENU_CLEANUP = "🧹  Đội dọn dẹp nhận nhiệm vụ"
+MENU_COMPLETED = "✅  Danh sách đã dọn"
+MENU_HOTSPOTS = "🗺️  Bản đồ điểm nóng"
+MENU_LEADERBOARD = "🏆  Bảng xếp hạng tích điểm"
+MENU_SPAM = "🛡️  Báo cáo Spam & Xóa"
+MENU_ADMIN = "⚙️  Reset & Cài đặt AI"
+
+# Các nhóm menu: (tiêu đề nhóm, danh sách mục)
+NAV_GROUPS = [
+    ("👤 Dành cho người dân", [MENU_REPORT, MENU_CHAT]),
+    ("🧹 Đội dọn dẹp", [MENU_CLEANUP, MENU_COMPLETED]),
+    ("📊 Theo dõi & thống kê", [MENU_HOTSPOTS, MENU_LEADERBOARD]),
+    ("🛡️ Kiểm duyệt", [MENU_SPAM]),
+]
+
+
+def _nav_button(label):
+    active = st.session_state.get("nav_page") == label
+    if st.button(
+        label,
+        key=f"nav_{label}",
+        use_container_width=True,
+        type="primary" if active else "secondary",
+    ):
+        st.session_state["nav_page"] = label
+        st.rerun()
 
 
 def sidebar_menu():
+    if st.session_state.get("nav_page") is None:
+        st.session_state["nav_page"] = MENU_REPORT
+
     with st.sidebar:
         st.markdown(
             """
@@ -2670,38 +2823,31 @@ def sidebar_menu():
                 <span class="sidebar-live-dot"></span>
                 Hệ thống AI đang hoạt động
             </div>
-
-            <div class="sidebar-section-title">Điều hướng</div>
             """,
             unsafe_allow_html=True,
         )
 
-        page = st.radio(
-            "MENU",
-            [
-                MENU_REPORT,
-                MENU_CHAT,
-                MENU_CLEANUP,
-                MENU_COMPLETED,
-                MENU_HOTSPOTS,
-                MENU_LEADERBOARD,
-                MENU_SPAM,
-                MENU_ADMIN,
-            ],
-            label_visibility="collapsed",
-        )
+        # --- Các nhóm điều hướng ---
+        for title, items in NAV_GROUPS:
+            st.markdown(
+                f'<div class="sidebar-group-title">{title}</div>',
+                unsafe_allow_html=True,
+            )
+            for item in items:
+                _nav_button(item)
 
+        # --- Thông tin hệ thống ---
         st.markdown(
             """
-            <div class="sidebar-section-title">Hệ thống</div>
-            <div class="sidebar-info">
+            <div class="sidebar-group-title">ℹ️ Hệ thống</div>
+            <div class="sidebar-info" style="margin-top:0;">
                 <b>🤖 AI Vision</b><br>
                 Tự động phân tích ảnh ngay sau khi gửi.<br><br>
                 <b>💬 Chat AI</b><br>
                 Hỏi đáp cách phân loại và xử lý các loại rác.<br><br>
-                <b>Bản đồ</b><br>
+                <b>🗺️ Bản đồ</b><br>
                 Hiển thị vị trí báo cáo và nhiệm vụ dọn dẹp.<br><br>
-                <b>Bảo vệ dữ liệu</b><br>
+                <b>🔒 Bảo vệ dữ liệu</b><br>
                 Báo cáo Spam tự động xóa sau 7 ngày.
             </div>
 
@@ -2713,7 +2859,14 @@ def sidebar_menu():
             unsafe_allow_html=True,
         )
 
-    return page
+        # --- Quản trị: nằm cuối cùng, dưới phần Hệ thống ---
+        st.markdown(
+            '<div class="sidebar-group-title">🔐 Quản trị</div>',
+            unsafe_allow_html=True,
+        )
+        _nav_button(MENU_ADMIN)
+
+    return st.session_state["nav_page"]
 
 
 # =========================================================
