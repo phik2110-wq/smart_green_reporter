@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import re
+import threading
 import time
 import unicodedata
 import uuid
@@ -1145,6 +1146,10 @@ button[data-testid="stSidebarCollapsedControl"] svg,
 }
 
 /* --- Avatar logo trong sidebar --- */
+[data-testid="stSidebar"] .sidebar-logo {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
 .sidebar-logo-img {
     width: 62px;
     height: 62px;
@@ -1605,11 +1610,11 @@ def normalize_bool(value):
     return False
 
 
-def _cloudflare_request(prompt: str, image_bytes: bytes):
+def _cloudflare_request(prompt: str, image_bytes: bytes, max_tokens: int = 700):
     payload = {
         "prompt": prompt,
         "image": image_to_data_uri(image_bytes),
-        "max_tokens": 500,
+        "max_tokens": max_tokens,
         "temperature": 0,
     }
 
@@ -1656,19 +1661,106 @@ def _cloudflare_request(prompt: str, image_bytes: bytes):
     return str(text), data
 
 
+WASTE_NOT_LIST = (
+    "Những thứ KHÔNG phải rác: phao nổi và dây phao trên sông/hồ, phao tiêu, cầu, tàu thuyền, bè, "
+    "nhà cửa, công trình, cây cối và cỏ mọc tự nhiên, lá/cành cây rụng tự nhiên, đá, cát, bùn, nước, "
+    "sóng, bờ kè, mây, bầu trời, bóng râm, vạch kẻ đường, xe cộ đang đỗ, người, động vật, biển báo, "
+    "cột điện, hàng hóa đang bày bán, đồ đạc đang được sử dụng."
+)
+
+# Vật thể thường bị nhận nhầm thành rác (so khớp trên chữ đã bỏ dấu)
+_NOT_WASTE_WORDS = re.compile(r"\b(phao|cau|thuyen|bau troi)\b")
+
+AI_PASS1_PROMPT = """Bạn là kiểm duyệt viên khó tính của hệ thống phản ánh rác thải đô thị. Nhiệm vụ: nhìn ảnh và cho biết có RÁC THẢI bị vứt bỏ, nhìn thấy RÕ RÀNG hay không.
+
+NGUYÊN TẮC:
+- Chỉ nói về những gì bạn thực sự nhìn thấy. Tuyệt đối không suy đoán, không bịa vật thể.
+- Ảnh phong cảnh sạch, ảnh người, selfie, ảnh thẻ, ảnh công trình đều KHÔNG có rác.
+- Nếu phân vân hoặc không chắc một vật có phải rác hay không thì KHÔNG đưa vào waste_items.
+- """ + WASTE_NOT_LIST + """
+- Rác thải là: chai lọ, lon, túi nilon, hộp xốp, bao bì, giấy vụn, đống rác sinh hoạt, rác xây dựng bỏ đi, đồ điện tử/nội thất hỏng bị vứt, rác trôi nổi hoặc tập trung thành đám trên mặt nước...
+
+TRẢ LỜI bằng MỘT JSON object duy nhất, theo đúng thứ tự khóa sau (mô tả cảnh TRƯỚC, kết luận SAU). Không markdown, không lời mở đầu hay kết, dùng dấu ngoặc kép chuẩn JSON, ký tự đầu là { và ký tự cuối là }:
+
+{
+  "scene_description": "Mô tả khách quan 1-2 câu: ảnh chụp ở đâu, có những vật thể chính nào.",
+  "waste_items": [{"item": "tên vật thể rác cụ thể", "where": "vị trí trong ảnh"}],
+  "confidence": 0,
+  "contains_waste": false,
+  "is_waste_amount_sufficient": false,
+  "natural_report": "Nhận xét tự nhiên bằng tiếng Việt, chỉ dựa trên waste_items.",
+  "waste_type": "Loại rác (chỉ khi có rác, nếu không thì chuỗi rỗng).",
+  "severity": "Nhẹ, Trung bình hoặc Nghiêm trọng (chỉ khi có rác, nếu không thì chuỗi rỗng).",
+  "visual_evidence": "Bằng chứng nhìn thấy trong ảnh.",
+  "spam_reason": "Lý do không hợp lệ nếu không có rác, nếu hợp lệ thì chuỗi rỗng.",
+  "dispatch_plan": "Phương án xử lý dựa đúng trên những gì thấy (chỉ khi có rác)."
+}
+
+Quy tắc điền:
+- waste_items: chỉ liệt kê vật rác bạn nhìn thấy rõ; không có thì để [].
+- confidence: số nguyên 0-100, mức chắc chắn rằng ảnh có rác thải thật sự.
+- contains_waste = true CHỈ KHI waste_items có ít nhất một phần tử và confidence từ 60 trở lên.
+- is_waste_amount_sufficient = true CHỈ KHI có ít nhất 3 vật rác hoặc một đống/đám rác rõ ràng cần dọn dẹp.
+"""
+
+AI_VERIFY_PROMPT = """Bạn là kiểm duyệt viên thứ hai, rất khắt khe, kiểm tra lại kết quả của một hệ thống AI khác. Hệ thống đó cho rằng ảnh có các vật sau là rác thải:
+
+{{ITEMS}}
+
+Hãy nhìn thật kỹ ảnh và kiểm tra TỪNG vật. Chỉ xác nhận vật nào CHẮC CHẮN là rác thải bị vứt bỏ và nhìn thấy rõ trong ảnh. Hệ thống kia có thể đã nhầm.
+""" + WASTE_NOT_LIST + """
+
+Trả lời bằng MỘT JSON object duy nhất, không markdown, dùng dấu ngoặc kép chuẩn JSON:
+{
+  "confirmed_items": ["vật rác thật sự nhìn thấy rõ"],
+  "rejected_items": [{"item": "vật bị loại", "reason": "vì sao không phải rác"}],
+  "final_contains_waste": false,
+  "final_is_waste_amount_sufficient": false,
+  "reason": "Một câu tiếng Việt giải thích kết luận cuối cùng."
+}
+
+final_contains_waste = true CHỈ KHI confirmed_items có ít nhất một phần tử.
+final_is_waste_amount_sufficient = true CHỈ KHI có ít nhất 3 vật rác hoặc một đống/đám rác rõ ràng cần dọn dẹp.
+"""
+
+
+def _to_int(value, default=0):
+    try:
+        return max(0, min(100, int(float(str(value).strip().rstrip("%")))))
+    except Exception:
+        return default
+
+
+def _clean_items(value):
+    """Chuẩn hóa danh sách vật rác và loại các vật thể hay bị nhận nhầm (phao, cầu, thuyền...)."""
+    if isinstance(value, str):
+        value = [value]
+    items = []
+    if isinstance(value, list):
+        for entry in value:
+            if isinstance(entry, dict):
+                name = str(entry.get("item") or entry.get("name") or "").strip()
+                where = str(entry.get("where") or entry.get("location") or "").strip()
+                entry = f"{name} ({where})" if name and where else name
+            entry = str(entry or "").strip()
+            if len(entry) >= 3 and not _NOT_WASTE_WORDS.search(_fold(entry)):
+                items.append(entry)
+    return items[:10]
+
+
 def _normalize_ai_result(parsed):
     if not isinstance(parsed, dict):
         raise ValueError("Kết quả AI không phải object JSON.")
 
-    parsed["contains_waste"] = normalize_bool(
-        parsed.get("contains_waste")
-    )
+    parsed["contains_waste"] = normalize_bool(parsed.get("contains_waste"))
     parsed["is_waste_amount_sufficient"] = normalize_bool(
         parsed.get("is_waste_amount_sufficient")
     )
+    parsed["waste_items"] = _clean_items(parsed.get("waste_items"))
+    parsed["confidence"] = _to_int(parsed.get("confidence"), 0)
 
     for key in [
-        "natural_report", "waste_type", "severity",
+        "scene_description", "natural_report", "waste_type", "severity",
         "visual_evidence", "spam_reason", "dispatch_plan",
     ]:
         parsed[key] = str(parsed.get(key, "") or "").strip()
@@ -1676,73 +1768,98 @@ def _normalize_ai_result(parsed):
     return parsed
 
 
+def _ai_json_call(prompt, image_bytes, max_tokens=700):
+    """Gọi AI và đọc JSON; nếu AI trả sai định dạng thì hỏi lại đúng một lần."""
+    text, raw = _cloudflare_request(prompt, image_bytes, max_tokens=max_tokens)
+    try:
+        return extract_json_object(text), raw
+    except Exception as first_error:
+        repair = (
+            "Hãy nhìn lại chính ảnh này và trả lời lại. CHỈ trả về MỘT JSON object hợp lệ, "
+            "dùng dấu ngoặc kép chuẩn JSON, không markdown, không giải thích thêm.\n\n" + prompt
+        )
+        try:
+            text2, raw2 = _cloudflare_request(repair, image_bytes, max_tokens=max_tokens)
+            return extract_json_object(text2), raw2
+        except Exception as second_error:
+            raise RuntimeError(
+                "AI đã nhận được ảnh nhưng không trả về JSON hợp lệ sau 2 lần thử. "
+                f"Lần 1: {first_error}; Lần 2: {second_error}"
+            ) from second_error
+
+
 def analyze_image_with_cloudflare(image_bytes: bytes):
+    """
+    Phân tích 2 bước để giảm báo nhầm:
+      Bước 1: AI mô tả cảnh, liệt kê vật rác cụ thể (kèm vị trí) rồi mới kết luận.
+      Bước 2: nếu bước 1 nói có rác, một lượt kiểm chứng khắt khe kiểm tra lại TỪNG vật.
+    Chỉ duyệt khi cả hai bước đồng ý. Ảnh rõ ràng không có rác chỉ tốn 1 lượt gọi AI.
+    """
     if not cloudflare_configured():
         raise RuntimeError(
             "Chưa cấu hình CLOUDFLARE_ACCOUNT_ID và "
             "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
         )
 
-    prompt = """
-Bạn là AI kiểm duyệt ảnh rác thải đô thị.
+    parsed_raw, raw1 = _ai_json_call(AI_PASS1_PROMPT, image_bytes)
+    parsed = _normalize_ai_result(parsed_raw)
 
-Hãy nhìn trực tiếp vào ảnh và quyết định có rác thải nhìn thấy rõ hay không.
-Chân dung, selfie, ảnh người, ảnh nhóm, ảnh thẻ hoặc khuôn mặt KHÔNG phải rác.
-Nếu không thấy rác rõ ràng hoặc không chắc chắn thì trả contains_waste=false.
-Không được suy đoán vật thể không nhìn thấy.
+    items = parsed["waste_items"]
+    confidence = parsed["confidence"]
+    claims_waste = bool(parsed["contains_waste"] and items and confidence >= 60)
+    verification = None
+    reason = ""
 
-QUAN TRỌNG: Phản hồi phải là MỘT JSON OBJECT DUY NHẤT.
-Không markdown, không ```json, không lời mở đầu, không lời kết.
-Dùng dấu ngoặc kép chuẩn JSON, KHÔNG dùng dấu nháy đơn kiểu Python.
-Ký tự đầu tiên phải là { và ký tự cuối cùng phải là }.
-Dùng đúng 8 khóa dưới đây.
-
-{
-  "contains_waste": false,
-  "is_waste_amount_sufficient": false,
-  "natural_report": "Nhận xét tự nhiên bằng tiếng Việt.",
-  "waste_type": "Loại rác nếu có, nếu không thì chuỗi rỗng.",
-  "severity": "Mức độ nếu có, nếu không thì chuỗi rỗng.",
-  "visual_evidence": "Những gì thực sự nhìn thấy trong ảnh.",
-  "spam_reason": "Lý do không hợp lệ nếu không có rác, nếu hợp lệ thì chuỗi rỗng.",
-  "dispatch_plan": "Phương án xử lý do AI tự đề xuất nếu có rác, nếu không thì chuỗi rỗng."
-}
-
-Không dùng câu xử lý cố định. dispatch_plan phải dựa trên đúng những gì nhìn thấy.
-"""
-
-    text, raw_data = _cloudflare_request(prompt, image_bytes)
-
-    try:
-        parsed = extract_json_object(text)
-        return _normalize_ai_result(parsed), raw_data
-    except Exception as first_error:
-        # Model đôi khi trả lời bằng văn bản dù đã yêu cầu JSON. Gửi lại một
-        # lần với prompt cực ngắn để chuẩn hóa, thay vì làm mất báo cáo.
-        repair_prompt = f"""
-Hãy phân tích lại chính ảnh này. Chỉ trả về JSON object hợp lệ, không markdown.
-Dùng dấu ngoặc kép chuẩn JSON, KHÔNG dùng dấu nháy đơn kiểu Python.
-Không thấy rác rõ ràng hoặc không chắc chắn => contains_waste=false.
-Người/chân dung/selfie không phải rác.
-
-JSON bắt buộc có đúng các khóa:
-contains_waste, is_waste_amount_sufficient, natural_report, waste_type, severity, visual_evidence, spam_reason, dispatch_plan.
-
-Lần trả lời trước (chỉ để tham khảo, không tin tuyệt đối):
-{text[:1200]}
-"""
-
+    if claims_waste:
+        verify_prompt = AI_VERIFY_PROMPT.replace(
+            "{{ITEMS}}", "\n".join(f"- {item}" for item in items)
+        )
         try:
-            repaired_text, repaired_raw = _cloudflare_request(
-                repair_prompt, image_bytes
-            )
-            parsed = extract_json_object(repaired_text)
-            return _normalize_ai_result(parsed), repaired_raw
-        except Exception as second_error:
-            raise RuntimeError(
-                "AI đã nhận được ảnh nhưng không trả về JSON hợp lệ sau 2 lần thử. "
-                f"Lần 1: {first_error}; Lần 2: {second_error}"
-            ) from second_error
+            verdict, _raw2 = _ai_json_call(verify_prompt, image_bytes, max_tokens=500)
+            confirmed = _clean_items(verdict.get("confirmed_items"))
+            reason = str(verdict.get("reason") or "").strip()
+            verified_waste = normalize_bool(verdict.get("final_contains_waste")) and bool(confirmed)
+            verified_enough = normalize_bool(verdict.get("final_is_waste_amount_sufficient"))
+            verification = {
+                "confirmed_items": confirmed,
+                "rejected_items": verdict.get("rejected_items") or [],
+                "reason": reason,
+            }
+            if verified_waste:
+                parsed["waste_items"] = confirmed
+                parsed["is_waste_amount_sufficient"] = bool(
+                    parsed["is_waste_amount_sufficient"] and verified_enough
+                )
+            else:
+                claims_waste = False
+        except Exception as exc:
+            # Không kiểm chứng được: chỉ tin kết quả bước 1 khi AI rất chắc chắn,
+            # nếu không thì đưa vào "Lỗi AI" để quản trị viên phân tích lại.
+            if confidence < 80:
+                raise RuntimeError(f"Không kiểm chứng được kết quả AI: {exc}") from exc
+            verification = {"error": str(exc)[:300]}
+
+    if claims_waste:
+        evidence = parsed["scene_description"]
+        listing = "; ".join(parsed["waste_items"])
+        parsed["visual_evidence"] = f"{evidence} Rác nhìn thấy: {listing}".strip()
+    else:
+        scene = parsed["scene_description"] or parsed["visual_evidence"]
+        parsed["contains_waste"] = False
+        parsed["is_waste_amount_sufficient"] = False
+        parsed["waste_items"] = []
+        parsed["natural_report"] = "Không thấy rác thải rõ ràng trong ảnh." + (
+            f" Nội dung ảnh: {scene}" if scene else ""
+        )
+        parsed["waste_type"] = ""
+        parsed["severity"] = ""
+        parsed["dispatch_plan"] = ""
+        parsed["spam_reason"] = (
+            reason or parsed["spam_reason"] or "Ảnh không có rác thải đủ rõ ràng."
+        )
+
+    parsed["verification"] = verification
+    return parsed, {"first_pass": raw1}
 
 
 # =========================================================
@@ -1756,7 +1873,7 @@ Lần trả lời trước (chỉ để tham khảo, không tin tuyệt đối):
 #   4) Bộ lọc đầu ra: nếu câu trả lời lộ nội dung hướng dẫn nội bộ thì thay bằng câu từ chối.
 #   5) Giới hạn tốc độ + khóa phiên sau nhiều lần vi phạm.
 
-CHAT_SYSTEM_PROMPT = """Bạn là "Trợ lý Mắt Xanh", trợ lý tư vấn về rác thải cho người dân Đồng Nai trong ứng dụng Urban GreenEye.
+CHAT_SYSTEM_PROMPT = """Bạn là "Trợ lý Mắt Xanh", trợ lý tư vấn về rác thải cho người dân TP. Biên Hòa, Đồng Nai trong ứng dụng Urban GreenEye.
 
 PHẠM VI DUY NHẤT:
 - Cách phân loại và xử lý các loại rác: hữu cơ, tái chế (nhựa, giấy, kim loại, thủy tinh), vô cơ, nguy hại (pin, bóng đèn, thuốc hết hạn, hóa chất, dầu nhớt), điện tử, cồng kềnh, xây dựng.
@@ -2020,6 +2137,100 @@ def get_reports(status=None):
     if status:
         params["status"] = f"eq.{status}"
     return _supabase_select("reports", params)
+
+
+# ---------- Phân tích AI chạy nền: người dân gửi xong là xong ----------
+_AI_LOCK = threading.Lock()
+_AI_IN_PROGRESS = set()
+_LAST_SWEEP = {"ts": 0.0}
+PENDING_AI_GRACE_SECONDS = 180   # báo cáo chờ quá 3 phút (luồng nền bị mất) sẽ được nhặt lại
+PENDING_SWEEP_INTERVAL = 60      # tối đa 1 lần quét mỗi phút
+PENDING_SWEEP_BATCH = 3          # mỗi lần quét xử lý tối đa 3 báo cáo
+
+
+def process_report_ai(report_id, prepared=None):
+    """
+    Phân tích AI cho một báo cáo rồi lưu kết quả. KHÔNG dùng st.* nên chạy được trong luồng nền.
+    Lỗi AI được ghi vào báo cáo (trạng thái "Lỗi AI") để quản trị viên phân tích lại trong mục Cài đặt AI.
+    Trả về trạng thái mới, hoặc None nếu báo cáo đang được xử lý ở nơi khác.
+    """
+    with _AI_LOCK:
+        if report_id in _AI_IN_PROGRESS:
+            return None
+        _AI_IN_PROGRESS.add(report_id)
+    try:
+        if not cloudflare_configured():
+            save_ai_error(
+                report_id,
+                "Chưa cấu hình Cloudflare Workers AI. Hãy kiểm tra CLOUDFLARE_ACCOUNT_ID và "
+                "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN.",
+            )
+            return "Lỗi AI"
+
+        row = None
+        if prepared is None:
+            row = get_report(report_id)
+            if not row:
+                return None
+            prepared = prepare_image(download_stored_image(row["image_path"]))
+
+        parsed, raw_ai = analyze_image_with_cloudflare(prepared)
+        status = save_ai_result(report_id, parsed, raw_ai)
+
+        if status == "Đã duyệt":
+            try:
+                row = row or get_report(report_id)
+                add_user_points((row or {}).get("reporter_name") or "Ẩn danh", 5)
+            except Exception:
+                pass  # bảng xếp hạng được tính trực tiếp từ bảng reports
+        return status
+    except Exception as exc:
+        try:
+            save_ai_error(report_id, str(exc))
+        except Exception:
+            pass
+        return "Lỗi AI"
+    finally:
+        with _AI_LOCK:
+            _AI_IN_PROGRESS.discard(report_id)
+
+
+def start_ai_analysis_in_background(report_id, prepared):
+    threading.Thread(
+        target=process_report_ai, args=(report_id, prepared), daemon=True
+    ).start()
+
+
+def _sweep_pending_reports():
+    try:
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=PENDING_AI_GRACE_SECONDS)
+        ).isoformat()
+        rows = _supabase_select(
+            "reports",
+            {
+                "select": "id",
+                "status": "eq.Đang xử lý",
+                "created_at": f"lt.{cutoff}",
+                "order": "created_at.asc",
+                "limit": str(PENDING_SWEEP_BATCH),
+            },
+        )
+        for row in rows:
+            process_report_ai(row["id"])
+    except Exception:
+        pass
+
+
+def kick_pending_sweep():
+    """Nhặt lại các báo cáo bị kẹt 'Đang xử lý' (ví dụ app khởi động lại giữa chừng)."""
+    now = time.time()
+    with _AI_LOCK:
+        if now - _LAST_SWEEP["ts"] < PENDING_SWEEP_INTERVAL:
+            return
+        _LAST_SWEEP["ts"] = now
+    threading.Thread(target=_sweep_pending_reports, daemon=True).start()
 
 
 def report_code(report_id):
@@ -2317,42 +2528,12 @@ def page_report():
                     pass
                 raise
 
-            # Xác nhận đã gửi ngay sau khi DB nhận báo cáo.
+            # Báo cáo đã lưu bền vững. AI phân tích sau ở luồng nền, người dân không phải chờ.
+            start_ai_analysis_in_background(report_id, prepared)
             st.success(
-                f"✅ Gửi báo cáo thành công! Mã báo cáo: {str(report_id)[:12]}"
+                f"✅ Đã nhận báo cáo #{report_code(report_id)}! Báo cáo đã được lưu, "
+                "AI sẽ phân tích sau và chuyển cho đội dọn dẹp khi được duyệt."
             )
-
-            # AI chạy ngay sau khi báo cáo được lưu.
-            if not cloudflare_configured():
-                error = (
-                    "Chưa cấu hình Cloudflare Workers AI. "
-                    "Hãy kiểm tra CLOUDFLARE_ACCOUNT_ID và "
-                    "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
-                )
-                save_ai_error(report_id, error)
-                st.warning("⚠️ Báo cáo đã lưu nhưng AI chưa được cấu hình.")
-                return
-
-            with st.spinner("🤖 AI đang phân tích ảnh..."):
-                try:
-                    parsed, raw_ai = analyze_image_with_cloudflare(prepared)
-                    status = save_ai_result(report_id, parsed, raw_ai)
-                except Exception as ai_exc:
-                    save_ai_error(report_id, str(ai_exc))
-                    st.error(f"❌ AI chưa phân tích được: {ai_exc}")
-                    st.info("Báo cáo vẫn được lưu. Quản trị viên có thể phân tích lại trong mục Cài đặt AI.")
-                    return
-
-            if status == "Đã duyệt":
-                # Bảng xếp hạng được tính trực tiếp từ reports để không phụ thuộc
-                # vào việc ghi bảng điểm riêng có bị RLS chặn hay không.
-                try:
-                    add_user_points(name.strip() or "Ẩn danh", 5)
-                except Exception:
-                    pass
-                st.success("🤖 AI đã xác nhận đây là báo cáo rác hợp lệ.")
-            else:
-                st.warning("⚠️ AI xác định ảnh không đủ bằng chứng về rác nên báo cáo được đưa vào Spam/Từ chối.")
 
         except Exception as exc:
             st.error(f"❌ Không thể lưu báo cáo: {exc}")
@@ -2502,6 +2683,10 @@ FEEDBACK_CATEGORIES = [
 FEEDBACK_MIN_MESSAGE = 10
 FEEDBACK_MAX_MESSAGE = 1500
 FEEDBACK_MIN_INTERVAL_SECONDS = 30   # chống gửi liên tục trong một phiên
+FEEDBACK_RLS_HINT = (
+    "Bảng `feedbacks` đang chặn ghi dữ liệu (RLS). Quản trị viên hãy mở Supabase > SQL Editor "
+    "và chạy lại file `feedbacks_schema.sql` bản mới (có phần tạo policy), rồi thử lại."
+)
 FEEDBACK_SQL_HINT = (
     "Chưa có bảng `feedbacks` trên Supabase. Hãy mở **SQL Editor** và chạy file "
     "`feedbacks_schema.sql` đi kèm app, rồi thử lại."
@@ -2613,7 +2798,9 @@ def page_feedback():
                     pass
             raise
     except Exception as exc:
-        if "feedbacks" in str(exc) and ("404" in str(exc) or "PGRST" in str(exc) or "does not exist" in str(exc)):
+        if "42501" in str(exc) or "row-level security" in str(exc).lower():
+            st.error(FEEDBACK_RLS_HINT)
+        elif "feedbacks" in str(exc) and ("404" in str(exc) or "PGRST" in str(exc) or "does not exist" in str(exc)):
             st.error(FEEDBACK_SQL_HINT)
         else:
             st.error(f"❌ Chưa gửi được phản ánh: {exc}")
@@ -2736,6 +2923,9 @@ def page_cleanup_team():
                             if changed:
                                 st.success(f"Đã nhận nhiệm vụ #{code}.")
                             st.rerun()
+                    if st.button("🚫 Không phải rác (AI nhận nhầm)", key=f"notwaste_{row['id']}", use_container_width=True):
+                        _supabase_update("reports", {"id": row["id"]}, {"status": "Spam/Từ chối"})
+                        st.rerun()
                 with cols[1]:
                     if not show_stored_image(row["image_path"], "Ảnh hiện trường"):
                         st.caption("Không tải được ảnh hiện trường.")
@@ -3030,12 +3220,23 @@ def page_spam():
             if not show_stored_image(row["image_path"]):
                 st.caption("Không tải được ảnh.")
 
-            if st.button(
-                "🗑️ Xóa báo cáo này",
-                key=f"delete_spam_{row['id']}",
-            ):
-                delete_report(row["id"])
-                st.rerun()
+            btn_cols = st.columns(2)
+            with btn_cols[0]:
+                if st.button(
+                    "✅ Đây là rác thật, duyệt lại",
+                    key=f"approve_spam_{row['id']}",
+                    use_container_width=True,
+                ):
+                    _supabase_update("reports", {"id": row["id"]}, {"status": "Đã duyệt"})
+                    st.rerun()
+            with btn_cols[1]:
+                if st.button(
+                    "🗑️ Xóa báo cáo này",
+                    key=f"delete_spam_{row['id']}",
+                    use_container_width=True,
+                ):
+                    delete_report(row["id"])
+                    st.rerun()
 
 
 # =========================================================
@@ -3088,6 +3289,22 @@ def page_admin():
         else:
             st.error(message)
 
+    st.markdown("### ⏳ Báo cáo đang chờ AI phân tích")
+    waiting = get_reports("Đang xử lý")
+    st.caption(
+        f"{len(waiting)} báo cáo đang chờ. AI tự phân tích ở nền; báo cáo bị kẹt quá "
+        f"{PENDING_AI_GRACE_SECONDS // 60} phút sẽ được tự nhặt lại."
+    )
+    if waiting and st.button(
+        "🤖 Phân tích ngay các báo cáo đang chờ (tối đa 5)",
+        use_container_width=True,
+        key="run_pending_now",
+    ):
+        with st.spinner("AI đang phân tích..."):
+            for row in waiting[:5]:
+                process_report_ai(row["id"])
+        st.rerun()
+
     st.markdown("### 🔄 Báo cáo lỗi AI")
 
     errors = get_reports("Lỗi AI")
@@ -3095,6 +3312,15 @@ def page_admin():
     if not errors:
         st.success("Không có báo cáo lỗi AI.")
     else:
+        if st.button(
+            "🤖 Phân tích lại tất cả báo cáo lỗi (tối đa 5)",
+            use_container_width=True,
+            key="retry_all_errors",
+        ):
+            with st.spinner("AI đang phân tích lại..."):
+                for row in errors[:5]:
+                    process_report_ai(row["id"])
+            st.rerun()
         for row in errors:
             with st.container(border=True):
                 st.write(f"**ID:** {row['id']}")
@@ -3188,13 +3414,19 @@ NAV_GROUPS = [
 LOGO_PATH = Path(__file__).parent / "logo.png"
 
 
+# Logo được nhúng sẵn trong code nên app luôn hiện logo, không cần upload thêm logo.png.
+LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAAALAAAACwCAMAAACYaRRsAAAWfmNhQlgAABZ+anVtYgAAAB5qdW1kYzJwYQARABCAAACqADibcQNjMnBhAAAAFlhqdW1iAAAAR2p1bWRjMm1hABEAEIAAAKoAOJtxA3VybjpjMnBhOjVhZmVmMWYxLThmMDAtNDI4ZS1hMTQxLWEwZGUyMTgwZTkxMQAAAAOTanVtYgAAAClqdW1kYzJhcwARABCAAACqADibcQNjMnBhLmFzc2VydGlvbnMAAAAAuGp1bWIAAABEanVtZGNib3IAEQAQgAAAqgA4m3ETYzJwYS5pbmdyZWRpZW50LnYzAAAAABhjMnNoP2BiK8rPt4oaP6Jk4+tdogAAAGxjYm9yo2lkYzpmb3JtYXRpaW1hZ2UvcG5namluc3RhbmNlSUR4LHhtcDppaWQ6YTM1MmI3MWItNWVhZS00YWU0LWE2MGUtZDcwZDY5MmMyMTk4bHJlbGF0aW9uc2hpcGhwYXJlbnRPZgAAAeJqdW1iAAAAQWp1bWRjYm9yABEAEIAAAKoAOJtxE2MycGEuYWN0aW9ucy52MgAAAAAYYzJzaJzsp971af0vE0xQpkn6S30AAAGZY2JvcqJnYWN0aW9uc4KiZmFjdGlvbmtjMnBhLm9wZW5lZGpwYXJhbWV0ZXJzoWtpbmdyZWRpZW50c4GiY3VybHgtc2VsZiNqdW1iZj1jMnBhLmFzc2VydGlvbnMvYzJwYS5pbmdyZWRpZW50LnYzZGhhc2hYINrZDOo2SzllAzsNAaHVk6lhqlelRs8lf5pGkmo1F+qdpGZhY3Rpb254HWNvbS5hbnRocm9waWMuY2xhdWRlLnByb3ZpZGVkanBhcmFtZXRlcnOheB9jb20uYW50aHJvcGljLm9yaWdpbi1jb25maWRlbmNlZ3Vua25vd25rZGVzY3JpcHRpb254ZkNsYXVkZSBwcm92aWRlZCB0aGlzIGZpbGUgYXQgdGhlIHJlcXVlc3Qgb2YgYSB1c2VyIGFuZCBtYXkgaGF2ZSBjcmVhdGVkIG9yIG1vZGlmaWVkIHRoZSBmaWxlIGNvbnRlbnRzLm1zb2Z0d2FyZUFnZW50oWRuYW1lZkNsYXVkZXJhbGxBY3Rpb25zSW5jbHVkZWT1AAAAyGp1bWIAAABAanVtZGNib3IAEQAQgAAAqgA4m3ETYzJwYS5oYXNoLmRhdGEAAAAAGGMyc2jTpxkaSeXkyB8PCI3Gd2QDAAAAgGNib3KlY2FsZ2ZzaGEyNTZjcGFkTQAAAAAAAAAAAAAAAABkaGFzaFggnD/k0BeMzqsaOlaBB4+/7H7BmOvDO9RZ8OuMVWy/lG1kbmFtZW5qdW1iZiBtYW5pZmVzdGpleGNsdXNpb25zgaJlc3RhcnQYIWZsZW5ndGgZFooAAAI+anVtYgAAACdqdW1kYzJjbAARABCAAACqADibcQNjMnBhLmNsYWltLnYyAAAAAg9jYm9ypWNhbGdmc2hhMjU2aXNpZ25hdHVyZXhNc2VsZiNqdW1iZj0vYzJwYS91cm46YzJwYTo1YWZlZjFmMS04ZjAwLTQyOGUtYTE0MS1hMGRlMjE4MGU5MTEvYzJwYS5zaWduYXR1cmVqaW5zdGFuY2VJRHgseG1wOmlpZDoyNDAzN2I5Mi0xNjc2LTQ0MjYtYjk3Ny1mMTNiNDU2NmM1YjNyY3JlYXRlZF9hc3NlcnRpb25zg6JjdXJseC1zZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmluZ3JlZGllbnQudjNkaGFzaFgg2tkM6jZLOWUDOw0BodWTqWGqV6VGzyV/mkaSajUX6p2iY3VybHgqc2VsZiNqdW1iZj1jMnBhLmFzc2VydGlvbnMvYzJwYS5hY3Rpb25zLnYyZGhhc2hYILGNCJD5I3akJRUV+JBpPKoHvSKLptk/7c52qnVQWtwQomN1cmx4KXNlbGYjanVtYmY9YzJwYS5hc3NlcnRpb25zL2MycGEuaGFzaC5kYXRhZGhhc2hYIBaqKHRKVpD4niM017sqZM7RaGfQDLZwtPHXebkVFFuNdGNsYWltX2dlbmVyYXRvcl9pbmZvo2RuYW1lb0FudGhyb3BpYyBGaWxlc2d2ZXJzaW9uZTEuMC4wa3NwZWNWZXJzaW9uZTIuNC4wAAAQOGp1bWIAAAAoanVtZGMyY3MAEQAQgAAAqgA4m3EDYzJwYS5zaWduYXR1cmUAAAAQCGNib3LShFkCEqIBJhghWQIKMIICBjCCAY2gAwIBAgIUQOWgCu7COdC+uIP6BkIFPWdVEwAwCgYIKoZIzj0EAwMwSTEXMBUGA1UEChMOQW50aHJvcGljLCBQQkMxLjAsBgNVBAMTJUFudGhyb3BpYyBDb250ZW50IENyZWRlbnRpYWxzIFJvb3QgQ0EwHhcNMjYwODA3MTg0MzU2WhcNMjgwODA2MTk0MzU2WjBEMRcwFQYDVQQKEw5BbnRocm9waWMsIFBCQzEpMCcGA1UEAxMgQW50aHJvcGljIENsYXVkZSBDb250ZW50IFNpZ25pbmcwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASYegpry1AYBRTVNL1CpTlbROnY3dey+UrsF9C3phYrATN3ZHf93Mo8RQN0KOUuOn19P4oWNFWe5n2/She9N7eTo1gwVjAOBgNVHQ8BAf8EBAMCB4AwFQYDVR0lBA4wDAYKKwYBBAGD6F4CATAMBgNVHRMBAf8EAjAAMB8GA1UdIwQYMBaAFM5R4gSBTmRbI/jjxM+aPpzB11zCMAoGCCqGSM49BAMDA2cAMGQCMDFzHRSeAXrSy1WOzkbhPZ6Km2wGTmZ/2gK18k8BQGXyqz88Rdrz6CTX9flAnYNVxgIwcF9c3fVhqmJKpi+UhasNUMko69cyX6STPfta3Q8EjyzDjzoyrol46FP6VFHhvUcJoWNwYWRZDZ4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA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"
+
+
 @st.cache_data(show_spinner=False)
 def logo_data_uri():
-    """Đọc logo.png (cùng thư mục với app.py) thành data URI; không có file thì trả chuỗi rỗng."""
+    """Ưu tiên logo.png cạnh app.py (nếu có), nếu không dùng logo nhúng sẵn."""
     try:
-        return "data:image/png;base64," + base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+        if LOGO_PATH.exists():
+            return "data:image/png;base64," + base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
     except Exception:
-        return ""
+        pass
+    return "data:image/png;base64," + LOGO_B64
 
 
 def _nav_button(label):
@@ -3287,6 +3519,7 @@ def sidebar_menu():
 # =========================================================
 
 show_header()
+kick_pending_sweep()
 show_stats()
 
 page = sidebar_menu()
