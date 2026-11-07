@@ -1755,387 +1755,194 @@ def _cloudflare_request(prompt: str, image_bytes: bytes, max_tokens: int = 700, 
 
 
 # =========================================================
-# PHÂN TÍCH ẢNH RÁC: TÁCH "NHÌN" RA KHỎI "KẾT LUẬN"
+# PHÂN TÍCH ẢNH RÁC: GIỮ CÁCH GỐC ĐÃ CHẠY TỐT + LƯỚI AN TOÀN
 # =========================================================
-# Nguyên nhân gốc của lỗi duyệt nhầm (ví dụ ảnh chụp màn hình ứng dụng bị duyệt thành "rác nhựa và giấy"):
-# model thị giác nhỏ rất dễ trả lời "có" khi bị HỎI THẲNG "có rác không". Nên:
-#   Bước 1: yêu cầu AI chỉ MÔ TẢ ảnh một cách trung lập (không hề nhắc tới rác): loại ảnh, cảnh, danh sách vật thể.
-#   Bước 2: CODE tự kết luận có rác hay không dựa trên mô tả đó (từ vựng về rác, loại ảnh, vật bị loại trừ).
-#   Bước 3: chỉ khi đã xác định có rác, AI mới được viết báo cáo/phương án xử lý.
-# Ảnh chụp màn hình, đồ họa, ảnh không phải hiện trường bị loại ngay ở bước 2.
+# AI vẫn ra quyết định như bản gốc (một lần nhìn ảnh, trả JSON 8 khóa). Phần cải tiến:
+#   1) Prompt có thêm các quy tắc đã gặp lỗi thật: ảnh chụp màn hình, phao/cầu/thuyền không phải rác,
+#      còn rác nổi trên sông hoặc lẫn trong bèo thì vẫn là rác.
+#   2) "Lưới an toàn" bằng code đối chiếu quyết định của AI với chính phần mô tả của nó:
+#      - Chỉ làm việc nghi ngờ thành "Cần xem lại" (nhân viên quyết định), KHÔNG tự bỏ sót ảnh có rác.
+#      - Duy nhất một trường hợp tự từ chối: chính AI tả ảnh là ảnh chụp màn hình/đồ họa.
+#   3) Có kiểm tra điểm ảnh: ảnh giống ảnh chụp màn hình (nhiều mảng màu phẳng) mà AI bảo có rác -> "Cần xem lại".
 
-WASTE_NOT_LIST = (
-    "Những thứ KHÔNG phải rác: phao nổi và dây phao trên sông/hồ, phao tiêu, cầu, tàu thuyền, bè, "
-    "nhà cửa, công trình, cây cối, cỏ, lục bình/bèo đang sống, lá/cành cây rụng tự nhiên, đá, cát, bùn, "
-    "nước, sóng, bờ kè, mây, bầu trời, bóng râm, vạch kẻ đường, xe cộ đang đỗ, người, động vật, biển báo, "
-    "cột điện, hàng hóa đang bày bán, đồ đạc đang được sử dụng."
+AI_WASTE_PROMPT = """
+Bạn là AI kiểm duyệt ảnh rác thải đô thị.
+
+Hãy nhìn trực tiếp vào ảnh và quyết định có rác thải nhìn thấy rõ hay không.
+Chân dung, selfie, ảnh người, ảnh nhóm, ảnh thẻ hoặc khuôn mặt KHÔNG phải rác.
+Ảnh chụp màn hình điện thoại/máy tính, giao diện ứng dụng, tin nhắn, tài liệu, poster, meme, logo KHÔNG phải rác: khi đó trả contains_waste=false và ghi rõ trong spam_reason đây là ảnh chụp màn hình hoặc đồ họa.
+Phao nổi, dây phao, cầu, tàu thuyền, nhà cửa, cây cối, cỏ, lục bình hoặc bèo đang sống, mây, nước, đá, cát, bùn KHÔNG phải rác.
+Rác nổi trên sông, kênh, rạch, rác lẫn trong bèo hoặc cỏ, đống rác ven đường vẫn LÀ rác dù ảnh tối hoặc bẩn.
+Nếu không thấy rác rõ ràng hoặc không chắc chắn thì trả contains_waste=false.
+Không được suy đoán vật thể không nhìn thấy.
+
+QUAN TRỌNG: Phản hồi phải là MỘT JSON OBJECT DUY NHẤT.
+Không markdown, không ```json, không lời mở đầu, không lời kết.
+Dùng dấu ngoặc kép chuẩn JSON, KHÔNG dùng dấu nháy đơn kiểu Python.
+Ký tự đầu tiên phải là { và ký tự cuối cùng phải là }.
+Dùng đúng 8 khóa dưới đây.
+
+{
+  "contains_waste": false,
+  "is_waste_amount_sufficient": false,
+  "natural_report": "Nhận xét tự nhiên bằng tiếng Việt.",
+  "waste_type": "Loại rác nếu có, nếu không thì chuỗi rỗng.",
+  "severity": "Mức độ nếu có, nếu không thì chuỗi rỗng.",
+  "visual_evidence": "Những gì thực sự nhìn thấy trong ảnh.",
+  "spam_reason": "Lý do không hợp lệ nếu không có rác, nếu hợp lệ thì chuỗi rỗng.",
+  "dispatch_plan": "Phương án xử lý do AI tự đề xuất nếu có rác, nếu không thì chuỗi rỗng."
+}
+
+Không dùng câu xử lý cố định. dispatch_plan phải dựa trên đúng những gì nhìn thấy.
+"""
+
+# Chữ đã bỏ dấu để so khớp. Cố ý không dùng "lon" đơn lẻ vì trùng "lớn".
+_UI_TEXT_RE = re.compile(
+    r"(anh chup man hinh|man hinh dien thoai|man hinh may tinh|giao dien|ung dung|tin nhan|thanh trang thai|"
+    r"nut bam|trinh duyet|screenshot|chatbot|poster|meme|\blogo\b|tai lieu)"
 )
-
-# Vật thể thường bị nhận nhầm thành rác (so khớp trên chữ đã bỏ dấu)
-_NOT_WASTE_WORDS = re.compile(r"\b(phao|cau|thuyen|bau troi)\b")
-# Thùng rác/xe rác đặt gọn gàng không phải là rác (trừ khi nói tràn, đổ, vương vãi...)
-_BIN_ONLY_RE = re.compile(r"\b(thung rac|xe rac|xe thu gom|xe cho rac|thung phan loai|cong nhan ve sinh)\b")
-_BIN_OVERFLOW_RE = re.compile(r"\b(tran|do|nga|vo|bua bai|chat day|vuong vai|xung quanh)\b")
-
-# Từ vựng về rác (chữ đã bỏ dấu). Cố ý không dùng "lon" đơn lẻ vì trùng "lớn".
-_WASTE_TERM_RE = re.compile(
-    r"(\brac\b|\bchai\b|nilon|ni lon|bao bi|hop xop|\bxop\b|ly nhua|hop com|hop giay|giay vun|bao tai|"
-    r"bao rac|tui rac|vo chai|vo lon|\blon (nuoc|bia|nhom|thiec|ngot)|ve chai|phe lieu|gach vun|"
-    r"da xay dung|xa ban|quan ao cu|giay dep cu|bua bai|do bo di|vat bi vut|thung carton|mieng nhua|"
-    r"tui nhua|dong do)"
+_WASTE_WORD_RE = re.compile(
+    r"(\brac\b|\bchai\b|nilon|ni lon|bao bi|hop xop|\bxop\b|ly nhua|hop com|giay vun|bao tai|tui rac|"
+    r"vo chai|vo lon|\blon (nuoc|bia|nhom|thiec|ngot)|ve chai|phe lieu|gach vun|xa ban|quan ao cu|"
+    r"giay dep cu|bua bai|vat bi vut|thung carton|mieng nhua|tui nhua|chai nhua|dong do)"
 )
 _STRONG_WASTE_RE = re.compile(
     r"((nhieu|dong|dam|bai|lop|ngap|day)\s*(la\s*)?rac|rac\s*(thai\s*)?(troi noi|chat dong|ngap|bua bai|chat day))"
 )
-# Dấu hiệu ảnh chụp màn hình / giao diện ứng dụng
-_UI_RE = re.compile(
-    r"(man hinh|giao dien|ung dung|tin nhan|thanh trang thai|nut bam|trinh duyet|thanh dieu huong|"
-    r"chatbot|screenshot|pop up|thanh cong cu|o nhap lieu|ban phim ao)"
-)
-
-AI_DESCRIBE_PROMPT = """Bạn là AI mô tả ảnh. Hãy quan sát ảnh và mô tả KHÁCH QUAN những gì thật sự nhìn thấy, không suy đoán, không bịa vật thể, không đánh giá tốt xấu.
-
-TRẢ LỜI bằng MỘT JSON object duy nhất, theo đúng thứ tự khóa sau. Không markdown, không lời mở đầu hay kết, dùng dấu ngoặc kép chuẩn JSON, ký tự đầu là { và ký tự cuối là }:
-
-{
-  "image_type": "anh_thuc_te",
-  "description": "Mô tả khách quan 2-3 câu: ảnh chụp ở đâu, bối cảnh, những vật thể chính.",
-  "objects": ["vật thể 1 kèm trạng thái/vị trí ngắn", "vật thể 2 kèm trạng thái/vị trí ngắn"],
-  "surface_condition": "Mô tả ngắn mặt đất/mặt nước/vỉa hè nhìn thấy và những vật nằm trên đó."
-}
-
-Quy tắc điền:
-- image_type chỉ nhận một trong các giá trị: "anh_thuc_te" (ảnh chụp cảnh ngoài đời thật: đường phố, sông kênh, bãi đất, nhà cửa...), "anh_man_hinh" (ảnh chụp màn hình điện thoại/máy tính, giao diện ứng dụng, tin nhắn, trang web), "anh_do_hoa" (hình vẽ, logo, poster, meme, tài liệu, ảnh nhiều chữ), "anh_nguoi" (chân dung, selfie, ảnh nhóm người là chủ thể), "khac".
-- objects: liệt kê tối đa 12 vật thể nhìn thấy rõ, mỗi mục kèm trạng thái hoặc vị trí ngắn, ví dụ: "túi nilon đen nằm dưới đất", "xe máy đang đỗ", "cây xanh". Gọi đúng tên vật như bạn thấy.
-"""
-
-AI_INVENTORY_PROMPT = """Bạn là AI kiểm kê vật thể trong ảnh. Hãy nhìn thật kỹ ảnh và liệt kê TẤT CẢ vật thể bạn thấy, từ vật lớn đến vật nhỏ, kể cả vật nằm dưới đất, ven đường, trôi trên mặt nước hay chồng chất thành đống. Chỉ nói những gì thật sự nhìn thấy, không suy đoán.
-
-TRẢ LỜI bằng MỘT JSON object duy nhất, theo đúng thứ tự khóa sau. Không markdown, không lời mở đầu hay kết, dùng dấu ngoặc kép chuẩn JSON, ký tự đầu là { và ký tự cuối là }:
-
-{
-  "image_type": "anh_thuc_te",
-  "items": ["vật thể 1 (số lượng ước chừng, trạng thái)", "vật thể 2 (số lượng ước chừng, trạng thái)"],
-  "summary": "Một câu tóm tắt toàn cảnh ảnh."
-}
-
-image_type chỉ nhận một trong các giá trị: "anh_thuc_te" (ảnh chụp cảnh ngoài đời thật), "anh_man_hinh" (ảnh chụp màn hình điện thoại/máy tính, giao diện ứng dụng, tin nhắn, trang web), "anh_do_hoa" (hình vẽ, logo, poster, meme, tài liệu, ảnh nhiều chữ), "anh_nguoi" (chân dung, selfie, ảnh nhóm người là chủ thể), "khac".
-"""
-
-AI_REPORT_PROMPT = """Ảnh này là ảnh hiện trường có rác thải. Thông tin đã được xác nhận:
-- Mô tả cảnh: {{SCENE}}
-- Vật rác đã xác định: {{ITEMS}}
-
-Hãy viết báo cáo ngắn gọn bằng tiếng Việt cho đội dọn dẹp. Chỉ dựa trên thông tin trên và những gì nhìn thấy trong ảnh, không thêm vật thể không có, viết chắc chắn, không dùng các từ "có thể" hay "dường như".
-
-TRẢ LỜI bằng MỘT JSON object duy nhất, không markdown, dùng dấu ngoặc kép chuẩn JSON:
-{
-  "natural_report": "1-2 câu nhận xét về tình trạng rác tại hiện trường.",
-  "waste_type": "Loại rác chính nhìn thấy (ví dụ: rác thải nhựa, bao bì, rác sinh hoạt...).",
-  "severity": "Nhẹ, Trung bình hoặc Nghiêm trọng.",
-  "dispatch_plan": "Phương án xử lý cụ thể: số người, dụng cụ, phương tiện phù hợp với tình trạng nhìn thấy."
-}
-"""
+_NEGATED_WASTE_RE = re.compile(r"\bkhong\s*(co|thay|nhin thay|phat hien|ghi nhan)\b.{0,25}\brac")
+_BIN_RE = re.compile(r"\b(thung rac|xe rac|xe thu gom|xe cho rac)\b")
 
 
-def _clean_objects(value, limit=12):
-    if isinstance(value, str):
-        value = [value]
-    out = []
-    if isinstance(value, list):
-        for entry in value:
-            if isinstance(entry, dict):
-                name = str(entry.get("item") or entry.get("name") or entry.get("object") or "").strip()
-                where = str(entry.get("where") or entry.get("status") or "").strip()
-                entry = f"{name} ({where})" if name and where else name
-            entry = str(entry or "").strip()
-            if len(entry) >= 2:
-                out.append(entry)
-    return out[:limit]
+def _normalize_ai_result(parsed):
+    if not isinstance(parsed, dict):
+        raise ValueError("Kết quả AI không phải object JSON.")
+
+    parsed["contains_waste"] = normalize_bool(parsed.get("contains_waste"))
+    parsed["is_waste_amount_sufficient"] = normalize_bool(parsed.get("is_waste_amount_sufficient"))
+
+    for key in [
+        "natural_report", "waste_type", "severity",
+        "visual_evidence", "spam_reason", "dispatch_plan",
+    ]:
+        parsed[key] = str(parsed.get(key, "") or "").strip()
+
+    return parsed
 
 
-def _normalize_image_kind(raw_type, text_blob):
-    """Trả về 'real' | 'screen' | 'graphic' | 'person' | 'other'."""
-    f = _fold(str(raw_type or "").replace("_", " "))
-    blob = _fold(text_blob)
-    if re.search(r"man hinh|screenshot|giao dien", f) or _UI_RE.search(blob):
-        return "screen"
-    if re.search(r"do hoa|poster|logo|meme|tai lieu|ve tay|minh hoa", f):
-        return "graphic"
-    if re.search(r"nguoi|chan dung|selfie|anh the", f):
-        return "person"
-    if not f or re.search(r"thuc te|anh that|photo|hien truong", f):
-        return "real"
-    return "other"
-
-
-def assess_scene(scene):
-    """CODE kết luận có rác hay không từ mô tả trung lập. Trả về dict kết quả."""
-    desc = scene["description"]
-    objects = scene["objects"]
-    surface = scene["surface_condition"]
-    kind = _normalize_image_kind(scene.get("image_type"), " ".join([desc, surface] + objects))
-
-    waste_objects = []
-    for obj in objects:
-        f = _fold(obj)
-        if _NOT_WASTE_WORDS.search(f) or not _WASTE_TERM_RE.search(f):
-            continue
-        if _BIN_ONLY_RE.search(f) and not _BIN_OVERFLOW_RE.search(f):
-            continue
-        waste_objects.append(obj)
-
-    blob = _fold(" ".join([desc, surface]))
-    if re.search(r"\bkhong\s*(co|thay|nhin thay|phat hien)\b.{0,25}\brac", blob):
-        text_hits, strong = 0, False
-    else:
-        cleaned = _BIN_ONLY_RE.sub(" ", blob)
-        text_hits = len({m.group(0) for m in _WASTE_TERM_RE.finditer(cleaned)})
-        strong = bool(_STRONG_WASTE_RE.search(cleaned)) or any(
-            _STRONG_WASTE_RE.search(_fold(o)) for o in objects
-        )
-
-    evidence = max(len(waste_objects), min(text_hits, 3))
-    if kind in ("screen", "graphic"):
-        amount = "khong"
-    elif strong or evidence >= 3:
-        amount = "nhieu"
-    elif evidence >= 1:
-        amount = "it"
-    else:
-        amount = "khong"
-
-    return {
-        "kind": kind,
-        "amount": amount,
-        "waste_objects": waste_objects,
-        "evidence": evidence,
-        "strong": strong,
-    }
-
-
-_KIND_REASONS = {
-    "screen": "Ảnh chụp màn hình/giao diện ứng dụng, không phải ảnh hiện trường.",
-    "graphic": "Ảnh đồ họa/tài liệu, không phải ảnh chụp hiện trường.",
-    "person": "Ảnh chân dung/người, không có rác thải rõ ràng ở hiện trường.",
-}
-
-
-def _guess_waste_type(items, text):
-    f = _fold(" ".join(list(items) + [text]))
-    parts = []
-    if re.search(r"nilon|ni lon|tui nhua|chai|ly nhua|mieng nhua|hop com", f):
-        parts.append("nhựa")
-    if re.search(r"giay|carton|hop giay", f):
-        parts.append("giấy")
-    if re.search(r"xop", f):
-        parts.append("xốp")
-    if re.search(r"\blon\b|vo lon|lon (nuoc|bia|nhom|thiec|ngot)", f):
-        parts.append("kim loại")
-    if re.search(r"gach|xay dung|xa ban", f):
-        parts.append("xây dựng")
-    if re.search(r"quan ao|giay dep", f):
-        parts.append("quần áo, giày dép")
-    return "Rác thải " + ", ".join(parts) if parts else "Rác thải hỗn hợp"
-
-
-def _normalize_severity(value, default):
-    f = _fold(value)
-    if "nghiem trong" in f:
-        return "Nghiêm trọng"
-    if "trung binh" in f:
-        return "Trung bình"
-    if f in ("nhe", "it") or f.startswith("nhe"):
-        return "Nhẹ"
-    return default
-
-
-def _ai_json_call(prompt, image_bytes, max_tokens=700):
-    """Gọi AI và đọc JSON; nếu AI trả sai định dạng thì hỏi lại đúng một lần."""
-    text, raw = _cloudflare_request(prompt, image_bytes, max_tokens=max_tokens)
-    try:
-        return extract_json_object(text), raw
-    except Exception as first_error:
-        repair = (
-            "Hãy nhìn lại chính ảnh này và trả lời lại. CHỈ trả về MỘT JSON object hợp lệ, "
-            "dùng dấu ngoặc kép chuẩn JSON, không markdown, không giải thích thêm.\n\n" + prompt
-        )
-        try:
-            text2, raw2 = _cloudflare_request(repair, image_bytes, max_tokens=max_tokens)
-            return extract_json_object(text2), raw2
-        except Exception as second_error:
-            raise RuntimeError(
-                "AI đã nhận được ảnh nhưng không trả về JSON hợp lệ sau 2 lần thử. "
-                f"Lần 1: {first_error}; Lần 2: {second_error}"
-            ) from second_error
-
-
-def shrink_for_ai(image_bytes, max_side=1024):
-    """Ảnh gửi cho AI chỉ cần ~1024px: nhẹ hơn, AI trả lời nhanh hơn, ít bị quá thời gian."""
+def looks_like_screenshot(image_bytes):
+    """
+    Ảnh chụp màn hình/đồ họa có nhiều mảng màu phẳng (nền trắng, nền đen...). Ảnh hiện trường thật rất hiếm khi vậy.
+    Chỉ là TÍN HIỆU phụ (đưa về 'Cần xem lại'), không bao giờ tự từ chối. Trả về (nghi_ngờ, tỉ lệ màu trội nhất).
+    """
     try:
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        if max(image.size) > max_side:
-            scale = max_side / max(image.size)
-            image = image.resize((int(image.width * scale), int(image.height * scale)), Image.LANCZOS)
-        output = BytesIO()
-        image.save(output, format="JPEG", quality=82, optimize=True)
-        return output.getvalue()
+        image.thumbnail((160, 160))
+        pixels = list(image.getdata())
+        if not pixels:
+            return False, 0.0
+        counts = {}
+        for r, g, b in pixels:
+            key = (r >> 3, g >> 3, b >> 3)
+            counts[key] = counts.get(key, 0) + 1
+        top = max(counts.values()) / len(pixels)
+        return top >= 0.40, round(top, 2)
     except Exception:
-        return image_bytes
+        return False, 0.0
 
 
-def _describe(image_bytes, prompt, description_keys, item_keys):
-    """Một lượt MÔ TẢ trung lập; trả về (scene, phản hồi gốc)."""
-    raw, resp = _ai_json_call(prompt, image_bytes, max_tokens=700)
-    if not isinstance(raw, dict):
-        raise RuntimeError("Kết quả mô tả ảnh của AI không phải object JSON.")
-    description = ""
-    for key in description_keys:
-        description = str(raw.get(key) or "").strip()
-        if description:
-            break
-    objects = []
-    for key in item_keys:
-        objects = _clean_objects(raw.get(key))
-        if objects:
-            break
-    if not description and not objects:
-        raise RuntimeError("AI không mô tả được nội dung ảnh.")
-    scene = {
-        "image_type": raw.get("image_type"),
-        "description": description,
-        "objects": objects,
-        "surface_condition": str(raw.get("surface_condition") or "").strip(),
-    }
-    return scene, resp
+def _waste_evidence(text):
+    """Đếm từ vựng về rác trong phần AI tự mô tả (0 nếu mô tả phủ định kiểu 'không thấy rác')."""
+    folded = _fold(text)
+    if _NEGATED_WASTE_RE.search(folded):
+        return 0, False
+    cleaned = _BIN_RE.sub(" ", folded)
+    hits = len({m.group(0) for m in _WASTE_WORD_RE.finditer(cleaned)})
+    return hits, bool(_STRONG_WASTE_RE.search(cleaned))
 
 
-def _merge_unique(*lists, limit=10):
-    seen, out = set(), []
-    for items in lists:
-        for item in items:
-            key = _fold(item)
-            if key and key not in seen:
-                seen.add(key)
-                out.append(item)
-    return out[:limit]
+def _apply_safety_net(parsed, image_bytes):
+    """Đối chiếu quyết định của AI với mô tả của chính nó. Nghi ngờ -> 'Cần xem lại', không tự bỏ sót."""
+    description = " ".join([parsed["visual_evidence"], parsed["natural_report"]])
+    ui_text = bool(_UI_TEXT_RE.search(_fold(description)))
+    hits, strong = _waste_evidence(" ".join([description, parsed["waste_type"]]))
+    flat, flat_ratio = looks_like_screenshot(image_bytes)
+
+    contains = parsed["contains_waste"]
+    enough = parsed["is_waste_amount_sufficient"]
+    parsed["needs_review"] = False
+    notes = [f"bằng chứng rác trong mô tả: {hits}{' (mạnh)' if strong else ''}", f"mảng màu phẳng: {flat_ratio}"]
+    review_reason = ""
+
+    if contains and ui_text and not strong:
+        # Chính AI tả ảnh là màn hình/đồ họa nhưng vẫn báo có rác -> mâu thuẫn, là ảnh không hợp lệ
+        parsed["contains_waste"] = False
+        parsed["is_waste_amount_sufficient"] = False
+        parsed["spam_reason"] = "Ảnh chụp màn hình/đồ họa, không phải ảnh hiện trường."
+        parsed["natural_report"] = parsed["spam_reason"] + (
+            f" {parsed['visual_evidence']}" if parsed["visual_evidence"] else ""
+        )
+        parsed["waste_type"] = parsed["severity"] = parsed["dispatch_plan"] = ""
+        notes.append("loại: ảnh màn hình/đồ họa")
+    elif contains and flat and hits < 3 and not strong:
+        review_reason = "ảnh giống ảnh chụp màn hình/đồ họa nhưng AI báo có rác"
+    elif contains and enough and hits == 0 and not strong:
+        review_reason = "AI báo có rác nhưng phần mô tả không nêu vật rác nào"
+    elif contains and not enough and (strong or hits >= 3):
+        review_reason = "AI báo rác quá ít nhưng phần mô tả cho thấy nhiều rác"
+    elif not contains and not ui_text and (strong or hits >= 3):
+        review_reason = "AI báo không có rác nhưng phần mô tả nhắc tới nhiều rác"
+
+    if review_reason:
+        parsed["needs_review"] = True
+        parsed["contains_waste"] = True
+        parsed["is_waste_amount_sufficient"] = True
+        parsed["spam_reason"] = review_reason[0].upper() + review_reason[1:] + "."
+        parsed["natural_report"] = (
+            "⚠️ AI chưa chắc chắn, cần nhân viên xem lại ảnh (" + review_reason + "). "
+            + parsed["natural_report"]
+        ).strip()
+        notes.append("cần xem lại")
+
+    parsed["decision_note"] = "; ".join(notes)
+    return parsed
 
 
 def analyze_image_with_cloudflare(image_bytes: bytes):
-    """
-    Đồng thuận 2 góc nhìn + code kết luận:
-      - Lượt 1 (mô tả cảnh) và lượt 2 (kiểm kê vật thể) đều là câu hỏi TRUNG LẬP, không nhắc tới rác.
-      - Code kết luận từng lượt (assess_scene). Hai lượt cùng thấy nhiều rác -> DUYỆT.
-        Hai lượt đều không thấy đủ rác / là ảnh chụp màn hình -> TỪ CHỐI.
-        Hai lượt bất đồng -> "Cần xem lại" để nhân viên quyết định, không tự duyệt hay tự xóa sai.
-      - Chỉ khi có rác mới nhờ AI viết báo cáo/phương án xử lý.
-    """
     if not cloudflare_configured():
         raise RuntimeError(
             "Chưa cấu hình CLOUDFLARE_ACCOUNT_ID và "
             "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
         )
 
-    image_bytes = shrink_for_ai(image_bytes)
-    # Hai lượt mô tả độc lập chạy SONG SONG: nhanh gần gấp đôi
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        future_a = pool.submit(_describe, image_bytes, AI_DESCRIBE_PROMPT, ("description",), ("objects",))
-        future_b = pool.submit(_describe, image_bytes, AI_INVENTORY_PROMPT, ("summary", "description"), ("items", "objects"))
-        scene_a, raw_a = future_a.result()
-        scene_b, raw_b = future_b.result()
+    text, raw_data = _cloudflare_request(AI_WASTE_PROMPT, image_bytes, max_tokens=700)
 
-    va = assess_scene(scene_a)
-    vb = assess_scene(scene_b)
-    approve_a = va["amount"] == "nhieu"
-    approve_b = vb["amount"] == "nhieu"
-
-    if approve_a and approve_b:
-        outcome = "approve"
-    elif not approve_a and not approve_b:
-        outcome = "reject"
-    else:
-        outcome = "review"
-
-    # Mô tả/ vật rác lấy từ góc nhìn có thấy rác (nếu có), nếu không lấy lượt 1
-    lead_scene = scene_b if (approve_b and not approve_a) else scene_a
-    items = _merge_unique(va["waste_objects"], vb["waste_objects"])
-    kind = "screen" if "screen" in (va["kind"], vb["kind"]) else va["kind"]
-    amount = "nhieu" if outcome != "reject" else (
-        "it" if "it" in (va["amount"], vb["amount"]) else "khong"
-    )
-
-    parsed = {
-        "image_type": kind,
-        "scene_description": lead_scene["description"],
-        "scene_objects": _merge_unique(scene_a["objects"], scene_b["objects"], limit=16),
-        "waste_items": items,
-        "waste_amount": amount,
-        "contains_waste": outcome != "reject",
-        "is_waste_amount_sufficient": outcome != "reject",
-        "needs_review": outcome == "review",
-        "natural_report": "",
-        "waste_type": "",
-        "severity": "",
-        "visual_evidence": lead_scene["description"],
-        "spam_reason": "",
-        "dispatch_plan": "",
-        "decision_note": (
-            f"Lượt 1: {va['kind']}/{va['amount']} ({va['evidence']} bằng chứng); "
-            f"Lượt 2: {vb['kind']}/{vb['amount']} ({vb['evidence']} bằng chứng) -> {outcome}."
-        ),
-    }
-
-    if outcome == "reject":
-        if kind in _KIND_REASONS and (va["kind"] == kind or vb["kind"] == kind):
-            reason = _KIND_REASONS[kind]
-        elif amount == "it":
-            reason = "Chỉ thấy rất ít rác (1-2 vật nhỏ), chưa đủ để cử đội dọn dẹp."
-        else:
-            reason = "Không thấy rác thải rõ ràng trong ảnh."
-        parsed["spam_reason"] = reason
-        parsed["natural_report"] = reason + (
-            f" Nội dung ảnh: {scene_a['description']}" if scene_a["description"] else ""
-        )
-        return parsed, {"view1": raw_a, "view2": raw_b}
-
-    # ---- Có rác (duyệt hoặc cần xem lại): nhờ AI viết báo cáo, lỗi bước này không làm mất báo cáo ----
-    shown_items = items or lead_scene["objects"]
-    strong = va["strong"] or vb["strong"]
-    default_severity = "Nghiêm trọng" if (strong or len(items) >= 6) else "Trung bình"
-    report, raw_r = {}, None
     try:
-        prompt = (
-            AI_REPORT_PROMPT
-            .replace("{{SCENE}}", lead_scene["description"] or "(không có)")
-            .replace("{{ITEMS}}", "; ".join(shown_items) or "(xem ảnh)")
-        )
-        report, raw_r = _ai_json_call(prompt, image_bytes, max_tokens=500)
-        if not isinstance(report, dict):
-            report = {}
-    except Exception:
-        report = {}
+        parsed = _normalize_ai_result(extract_json_object(text))
+    except Exception as first_error:
+        # Model đôi khi trả lời bằng văn bản dù đã yêu cầu JSON. Gửi lại một
+        # lần với prompt cực ngắn để chuẩn hóa, thay vì làm mất báo cáo.
+        repair_prompt = f"""
+Hãy phân tích lại chính ảnh này. Chỉ trả về JSON object hợp lệ, không markdown.
+Dùng dấu ngoặc kép chuẩn JSON, KHÔNG dùng dấu nháy đơn kiểu Python.
+Không thấy rác rõ ràng hoặc không chắc chắn => contains_waste=false.
+Người/chân dung/selfie/ảnh chụp màn hình không phải rác.
 
-    natural = str(report.get("natural_report") or "").strip() or (
-        lead_scene["description"] or "Phát hiện nhiều rác thải tại hiện trường."
-    )
-    if outcome == "review":
-        natural = (
-            "⚠️ AI chưa chắc chắn (hai lượt phân tích không thống nhất), cần nhân viên xem lại ảnh. " + natural
-        )
-        parsed["spam_reason"] = "Hai lượt phân tích của AI không thống nhất."
-    parsed["natural_report"] = natural
-    parsed["waste_type"] = str(report.get("waste_type") or "").strip() or _guess_waste_type(
-        shown_items, lead_scene["description"]
-    )
-    parsed["severity"] = _normalize_severity(report.get("severity"), default_severity)
-    parsed["dispatch_plan"] = str(report.get("dispatch_plan") or "").strip() or (
-        "Cử đội dọn dẹp mang găng tay, túi và dụng cụ thu gom đến hiện trường để thu gom, phân loại rác."
-    )
-    if shown_items:
-        parsed["visual_evidence"] = (
-            f"{lead_scene['description']} Rác nhìn thấy: {'; '.join(shown_items)}".strip()
-        )
-    return parsed, {"view1": raw_a, "view2": raw_b, "report": raw_r}
+JSON bắt buộc có đúng các khóa:
+contains_waste, is_waste_amount_sufficient, natural_report, waste_type, severity, visual_evidence, spam_reason, dispatch_plan.
+
+Lần trả lời trước (chỉ để tham khảo, không tin tuyệt đối):
+{text[:1200]}
+"""
+        try:
+            repaired_text, raw_data = _cloudflare_request(repair_prompt, image_bytes, max_tokens=700)
+            parsed = _normalize_ai_result(extract_json_object(repaired_text))
+        except Exception as second_error:
+            raise RuntimeError(
+                "AI đã nhận được ảnh nhưng không trả về JSON hợp lệ sau 2 lần thử. "
+                f"Lần 1: {first_error}; Lần 2: {second_error}"
+            ) from second_error
+
+    return _apply_safety_net(parsed, image_bytes), raw_data
 
 
 # =========================================================
