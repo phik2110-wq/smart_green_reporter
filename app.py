@@ -10,6 +10,7 @@ import time
 import unicodedata
 import uuid
 from html import escape
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import folium
@@ -1697,7 +1698,7 @@ def _cloudflare_request_once(prompt: str, image_bytes: bytes, max_tokens: int = 
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=90,
+            timeout=(10, 60),
         )
     except requests.RequestException as exc:
         raise RuntimeError(f"Không kết nối được Cloudflare: {exc}") from exc
@@ -1739,7 +1740,7 @@ _CF_RETRY_MARKERS = (
 )
 
 
-def _cloudflare_request(prompt: str, image_bytes: bytes, max_tokens: int = 700, attempts: int = 3):
+def _cloudflare_request(prompt: str, image_bytes: bytes, max_tokens: int = 700, attempts: int = 2):
     last_error = None
     for attempt in range(attempts):
         try:
@@ -1969,6 +1970,20 @@ def _ai_json_call(prompt, image_bytes, max_tokens=700):
             ) from second_error
 
 
+def shrink_for_ai(image_bytes, max_side=1024):
+    """Ảnh gửi cho AI chỉ cần ~1024px: nhẹ hơn, AI trả lời nhanh hơn, ít bị quá thời gian."""
+    try:
+        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        if max(image.size) > max_side:
+            scale = max_side / max(image.size)
+            image = image.resize((int(image.width * scale), int(image.height * scale)), Image.LANCZOS)
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=82, optimize=True)
+        return output.getvalue()
+    except Exception:
+        return image_bytes
+
+
 def _describe(image_bytes, prompt, description_keys, item_keys):
     """Một lượt MÔ TẢ trung lập; trả về (scene, phản hồi gốc)."""
     raw, resp = _ai_json_call(prompt, image_bytes, max_tokens=700)
@@ -2021,8 +2036,13 @@ def analyze_image_with_cloudflare(image_bytes: bytes):
             "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
         )
 
-    scene_a, raw_a = _describe(image_bytes, AI_DESCRIBE_PROMPT, ("description",), ("objects",))
-    scene_b, raw_b = _describe(image_bytes, AI_INVENTORY_PROMPT, ("summary", "description"), ("items", "objects"))
+    image_bytes = shrink_for_ai(image_bytes)
+    # Hai lượt mô tả độc lập chạy SONG SONG: nhanh gần gấp đôi
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(_describe, image_bytes, AI_DESCRIBE_PROMPT, ("description",), ("objects",))
+        future_b = pool.submit(_describe, image_bytes, AI_INVENTORY_PROMPT, ("summary", "description"), ("items", "objects"))
+        scene_a, raw_a = future_a.result()
+        scene_b, raw_b = future_b.result()
 
     va = assess_scene(scene_a)
     vb = assess_scene(scene_b)
@@ -2438,12 +2458,25 @@ def get_reports(status=None):
 
 
 # ---------- Phân tích AI chạy nền: người dân gửi xong là xong ----------
-_AI_LOCK = threading.Lock()
-_AI_IN_PROGRESS = set()
-_LAST_SWEEP = {"ts": 0.0}
-_AI_RETRIES = {}
+@st.cache_resource
+def _ai_runtime():
+    """
+    Trạng thái dùng chung cho TOÀN BỘ phiên và mọi lần chạy lại của app.
+    (Biến toàn cục thường bị tạo mới mỗi lần Streamlit chạy lại script, khiến khóa chống trùng và
+    giới hạn tần suất không còn tác dụng: nhiều luồng cùng phân tích một báo cáo, đốt hạn mức AI.)
+    """
+    return {
+        "lock": threading.Lock(),
+        "in_progress": set(),
+        "retries": {},
+        "last_sweep": 0.0,
+        "slots": threading.BoundedSemaphore(2),  # tối đa 2 báo cáo được phân tích cùng lúc
+    }
+
+
+_AI = _ai_runtime()
 AI_AUTO_RETRY_LIMIT = 3          # mỗi báo cáo lỗi được tự thử lại tối đa 3 lần
-PENDING_AI_GRACE_SECONDS = 180   # báo cáo chờ quá 3 phút (luồng nền bị mất) sẽ được nhặt lại
+PENDING_AI_GRACE_SECONDS = 120   # báo cáo chờ quá 2 phút (luồng nền bị mất) sẽ được nhặt lại
 PENDING_SWEEP_INTERVAL = 60      # tối đa 1 lần quét mỗi phút
 PENDING_SWEEP_BATCH = 3          # mỗi lần quét xử lý tối đa 3 báo cáo
 
@@ -2454,10 +2487,10 @@ def process_report_ai(report_id, prepared=None):
     Lỗi AI được ghi vào báo cáo (trạng thái "Lỗi AI") để quản trị viên phân tích lại trong mục Cài đặt AI.
     Trả về trạng thái mới, hoặc None nếu báo cáo đang được xử lý ở nơi khác.
     """
-    with _AI_LOCK:
-        if report_id in _AI_IN_PROGRESS:
+    with _AI["lock"]:
+        if report_id in _AI["in_progress"]:
             return None
-        _AI_IN_PROGRESS.add(report_id)
+        _AI["in_progress"].add(report_id)
     try:
         if not cloudflare_configured():
             save_ai_error(
@@ -2474,7 +2507,8 @@ def process_report_ai(report_id, prepared=None):
                 return None
             prepared = prepare_image(download_stored_image(row["image_path"]))
 
-        parsed, raw_ai = analyze_image_with_cloudflare(prepared)
+        with _AI["slots"]:
+            parsed, raw_ai = analyze_image_with_cloudflare(prepared)
         status = save_ai_result(report_id, parsed, raw_ai)
 
         if status == "Đã duyệt":
@@ -2491,8 +2525,8 @@ def process_report_ai(report_id, prepared=None):
             pass
         return "Lỗi AI"
     finally:
-        with _AI_LOCK:
-            _AI_IN_PROGRESS.discard(report_id)
+        with _AI["lock"]:
+            _AI["in_progress"].discard(report_id)
 
 
 def start_ai_analysis_in_background(report_id, prepared):
@@ -2526,11 +2560,11 @@ def _sweep_pending_reports():
             {"select": "id", "status": "eq.Lỗi AI", "order": "created_at.asc", "limit": "2"},
         )
         for row in error_rows:
-            with _AI_LOCK:
-                tries = _AI_RETRIES.get(row["id"], 0)
+            with _AI["lock"]:
+                tries = _AI["retries"].get(row["id"], 0)
                 if tries >= AI_AUTO_RETRY_LIMIT:
                     continue
-                _AI_RETRIES[row["id"]] = tries + 1
+                _AI["retries"][row["id"]] = tries + 1
             process_report_ai(row["id"])
     except Exception:
         pass
@@ -2539,10 +2573,10 @@ def _sweep_pending_reports():
 def kick_pending_sweep():
     """Nhặt lại các báo cáo bị kẹt 'Đang xử lý' (ví dụ app khởi động lại giữa chừng)."""
     now = time.time()
-    with _AI_LOCK:
-        if now - _LAST_SWEEP["ts"] < PENDING_SWEEP_INTERVAL:
+    with _AI["lock"]:
+        if now - _AI["last_sweep"] < PENDING_SWEEP_INTERVAL:
             return
-        _LAST_SWEEP["ts"] = now
+        _AI["last_sweep"] = now
     threading.Thread(target=_sweep_pending_reports, daemon=True).start()
 
 
@@ -2786,7 +2820,9 @@ def show_stats():
     rows = _supabase_select("reports", {"select": "status"})
     total = len(rows)
     approved = sum(1 for row in rows if row.get("status") == "Đã duyệt")
-    pending = sum(1 for row in rows if row.get("status") in ("Đang xử lý", "Lỗi AI", "Cần xem lại"))
+    pending = sum(1 for row in rows if row.get("status") == "Đang xử lý")
+    errors = sum(1 for row in rows if row.get("status") == "Lỗi AI")
+    review = sum(1 for row in rows if row.get("status") == "Cần xem lại")
     cleaned = sum(1 for row in rows if row.get("status") == "Đã dọn")
 
     stats = [
@@ -2806,6 +2842,14 @@ def show_stats():
     )
 
     st.markdown(f'<div class="stats-grid">{cards}</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("admin_full_access") and (errors or review):
+        notes = []
+        if errors:
+            notes.append(f"⚠️ {errors} báo cáo lỗi AI (xem ở mục Quản trị)")
+        if review:
+            notes.append(f"🔎 {review} báo cáo cần xem lại (xem ở mục Kiểm duyệt)")
+        st.caption("  •  ".join(notes))
 
 
 def show_task_map(row):
@@ -3786,6 +3830,8 @@ def page_admin():
         f"{len(waiting)} báo cáo đang chờ. AI tự phân tích ở nền; báo cáo bị kẹt quá "
         f"{PENDING_AI_GRACE_SECONDS // 60} phút sẽ được tự nhặt lại."
     )
+    for row in waiting[:10]:
+        st.write(f"• #{report_code(row['id'])} · gửi {format_vn_time(row.get('created_at'))}")
     if waiting and st.button(
         "🤖 Phân tích ngay các báo cáo đang chờ (tối đa 5)",
         use_container_width=True,
