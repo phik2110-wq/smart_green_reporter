@@ -95,6 +95,7 @@ def unlock_with_pin(pin: str, session_key: str) -> bool:
 st.markdown(
     """
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');
 /* ===== TOÀN BỘ GIAO DIỆN ===== */
 .stApp {
     background: #edf7ef;
@@ -1160,6 +1161,76 @@ button[data-testid="stSidebarCollapsedControl"] svg,
     background: #ffffff;
     box-shadow: 0 3px 10px rgba(23,107,53,.25);
 }
+
+/* =========================================================
+   FONT + ĐỘ TƯƠNG PHẢN: chữ luôn rõ trên cả điện thoại chế độ tối
+   ========================================================= */
+html, body, .stApp,
+.stApp p, .stApp li, .stApp label, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
+.stApp button, .stApp input, .stApp textarea, .stApp select,
+.stApp [data-testid="stMarkdownContainer"],
+.stApp [data-testid="stCaptionContainer"],
+.stApp [data-testid="stAlert"] p {
+    font-family: "Be Vietnam Pro", "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif !important;
+}
+html, body, .stApp { color-scheme: light !important; }
+.stApp { font-size: 16px; }
+
+[data-testid="stHeader"] { background: rgba(237,247,239,.95) !important; }
+
+/* Chú thích: không nhạt, không nhỏ */
+.stApp [data-testid="stCaptionContainer"],
+.stApp [data-testid="stCaptionContainer"] * {
+    color: #2f4a37 !important;
+    -webkit-text-fill-color: #2f4a37 !important;
+    opacity: 1 !important;
+    font-size: .95rem !important;
+}
+
+/* Nhãn ô nhập */
+.stApp [data-testid="stWidgetLabel"] *,
+.stApp [data-testid="stWidgetLabel"] {
+    color: #111111 !important;
+    font-weight: 600 !important;
+}
+
+/* Hộp thông báo (info / success / warning / error): nền sáng, chữ đậm, rõ ở mọi chế độ */
+.stApp [data-testid="stAlert"] {
+    background: #e3f0fc !important;
+    background-color: #e3f0fc !important;
+    border: 1px solid #9cc4ee !important;
+    border-radius: 14px !important;
+    overflow: hidden;
+}
+.stApp [data-testid="stAlert"] > div,
+.stApp [data-testid="stAlert"] [data-baseweb="notification"] {
+    background: transparent !important;
+    background-color: transparent !important;
+}
+.stApp [data-testid="stAlert"] * {
+    color: #111111 !important;
+    -webkit-text-fill-color: #111111 !important;
+    font-size: 1rem !important;
+    font-weight: 500 !important;
+    opacity: 1 !important;
+}
+.stApp [data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]) {
+    background: #e1f6e6 !important; background-color: #e1f6e6 !important; border-color: #8fd0a0 !important;
+}
+.stApp [data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]) {
+    background: #fff4d6 !important; background-color: #fff4d6 !important; border-color: #f0cf72 !important;
+}
+.stApp [data-testid="stAlert"]:has([data-testid="stAlertContentError"]) {
+    background: #fde4e1 !important; background-color: #fde4e1 !important; border-color: #f1a9a1 !important;
+}
+
+/* Khung thu gọn, bảng, mã: nền sáng */
+.stApp [data-testid="stExpander"] details {
+    background: #ffffff !important;
+    border: 1px solid #b9dfc0 !important;
+    border-radius: 14px !important;
+}
+.stApp [data-testid="stExpander"] summary * { color: #111111 !important; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -1610,7 +1681,7 @@ def normalize_bool(value):
     return False
 
 
-def _cloudflare_request(prompt: str, image_bytes: bytes, max_tokens: int = 700):
+def _cloudflare_request_once(prompt: str, image_bytes: bytes, max_tokens: int = 700):
     payload = {
         "prompt": prompt,
         "image": image_to_data_uri(image_bytes),
@@ -1661,171 +1732,224 @@ def _cloudflare_request(prompt: str, image_bytes: bytes, max_tokens: int = 700):
     return str(text), data
 
 
+# Lỗi tạm thời (mạng, quá tải, giới hạn tốc độ) thì tự thử lại; lỗi vĩnh viễn (sai khóa, sai tham số) thì báo ngay.
+_CF_RETRY_MARKERS = (
+    "không kết nối được cloudflare", "http 408", "http 409", "http 425", "http 429",
+    "http 500", "http 502", "http 503", "http 504", "capacity", "overloaded", "temporarily", "timeout", "timed out",
+)
+
+
+def _cloudflare_request(prompt: str, image_bytes: bytes, max_tokens: int = 700, attempts: int = 3):
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return _cloudflare_request_once(prompt, image_bytes, max_tokens)
+        except RuntimeError as exc:
+            last_error = exc
+            retryable = any(marker in str(exc).lower() for marker in _CF_RETRY_MARKERS)
+            if attempt == attempts - 1 or not retryable:
+                raise
+            time.sleep(2.0 * (attempt + 1))
+    raise last_error
+
+
+# =========================================================
+# PHÂN TÍCH ẢNH RÁC: TÁCH "NHÌN" RA KHỎI "KẾT LUẬN"
+# =========================================================
+# Nguyên nhân gốc của lỗi duyệt nhầm (ví dụ ảnh chụp màn hình ứng dụng bị duyệt thành "rác nhựa và giấy"):
+# model thị giác nhỏ rất dễ trả lời "có" khi bị HỎI THẲNG "có rác không". Nên:
+#   Bước 1: yêu cầu AI chỉ MÔ TẢ ảnh một cách trung lập (không hề nhắc tới rác): loại ảnh, cảnh, danh sách vật thể.
+#   Bước 2: CODE tự kết luận có rác hay không dựa trên mô tả đó (từ vựng về rác, loại ảnh, vật bị loại trừ).
+#   Bước 3: chỉ khi đã xác định có rác, AI mới được viết báo cáo/phương án xử lý.
+# Ảnh chụp màn hình, đồ họa, ảnh không phải hiện trường bị loại ngay ở bước 2.
+
 WASTE_NOT_LIST = (
     "Những thứ KHÔNG phải rác: phao nổi và dây phao trên sông/hồ, phao tiêu, cầu, tàu thuyền, bè, "
-    "nhà cửa, công trình, cây cối, cỏ, lục bình/bèo đang sống, lá/cành cây rụng tự nhiên, đá, cát, bùn, nước, "
-    "sóng, bờ kè, mây, bầu trời, bóng râm, vạch kẻ đường, xe cộ đang đỗ, người, động vật, biển báo, "
+    "nhà cửa, công trình, cây cối, cỏ, lục bình/bèo đang sống, lá/cành cây rụng tự nhiên, đá, cát, bùn, "
+    "nước, sóng, bờ kè, mây, bầu trời, bóng râm, vạch kẻ đường, xe cộ đang đỗ, người, động vật, biển báo, "
     "cột điện, hàng hóa đang bày bán, đồ đạc đang được sử dụng."
 )
 
 # Vật thể thường bị nhận nhầm thành rác (so khớp trên chữ đã bỏ dấu)
 _NOT_WASTE_WORDS = re.compile(r"\b(phao|cau|thuyen|bau troi)\b")
+# Thùng rác/xe rác đặt gọn gàng không phải là rác (trừ khi nói tràn, đổ, vương vãi...)
+_BIN_ONLY_RE = re.compile(r"\b(thung rac|xe rac|xe thu gom|xe cho rac|thung phan loai|cong nhan ve sinh)\b")
+_BIN_OVERFLOW_RE = re.compile(r"\b(tran|do|nga|vo|bua bai|chat day|vuong vai|xung quanh)\b")
 
-# Từ khóa cho thấy chính mô tả của AI nói về rác (chữ đã bỏ dấu). Cố ý không dùng "lon" vì trùng "lớn".
-_WASTE_KEYWORDS = [
-    "rac", "chai", "nilon", "bao bi", "hop xop", "xop", "nhua", "giay vun", "phe lieu",
-]
+# Từ vựng về rác (chữ đã bỏ dấu). Cố ý không dùng "lon" đơn lẻ vì trùng "lớn".
+_WASTE_TERM_RE = re.compile(
+    r"(\brac\b|\bchai\b|nilon|ni lon|bao bi|hop xop|\bxop\b|ly nhua|hop com|hop giay|giay vun|bao tai|"
+    r"bao rac|tui rac|vo chai|vo lon|\blon (nuoc|bia|nhom|thiec|ngot)|ve chai|phe lieu|gach vun|"
+    r"da xay dung|xa ban|quan ao cu|giay dep cu|bua bai|do bo di|vat bi vut|thung carton|mieng nhua|"
+    r"tui nhua|dong do)"
+)
 _STRONG_WASTE_RE = re.compile(
     r"((nhieu|dong|dam|bai|lop|ngap|day)\s*(la\s*)?rac|rac\s*(thai\s*)?(troi noi|chat dong|ngap|bua bai|chat day))"
 )
+# Dấu hiệu ảnh chụp màn hình / giao diện ứng dụng
+_UI_RE = re.compile(
+    r"(man hinh|giao dien|ung dung|tin nhan|thanh trang thai|nut bam|trinh duyet|thanh dieu huong|"
+    r"chatbot|screenshot|pop up|thanh cong cu|o nhap lieu|ban phim ao)"
+)
 
-AI_PROMPT = """Bạn là AI hỗ trợ phân loại ảnh phản ánh rác thải đô thị. Hãy xem ảnh và cho biết ảnh có RÁC THẢI bị vứt bỏ hay không, và nhiều hay ít.
+AI_DESCRIBE_PROMPT = """Bạn là AI mô tả ảnh. Hãy quan sát ảnh và mô tả KHÁCH QUAN những gì thật sự nhìn thấy, không suy đoán, không bịa vật thể, không đánh giá tốt xấu.
 
-NGUYÊN TẮC (cân bằng, tránh cả bỏ sót lẫn báo nhầm):
-- Chỉ nói về những gì thật sự nhìn thấy trong ảnh, không suy đoán, không bịa vật thể.
-- Rác vẫn là rác dù ảnh tối, mờ, bẩn, lẫn trong nước, bèo, cỏ hay bùn đất. Rác trôi nổi trên sông/kênh/rạch, rác chất đống bên đường, ven bờ, bãi đất trống đều là RÁC THẢI.
-- Rác thải gồm: chai lọ, lon, túi nilon, bao bì, hộp xốp, giấy vụn, quần áo/giày dép cũ bị vứt, bao tải, đống rác sinh hoạt, rác xây dựng bỏ đi, đồ điện tử/nội thất hỏng bị vứt...
-- Ảnh phong cảnh sạch, ảnh người, selfie, ảnh thẻ, ảnh công trình KHÔNG có rác.
-- """ + WASTE_NOT_LIST + """
-- Chỉ trả "khong" khi thật sự không thấy rác. Nếu đã thấy rác rõ ràng thì phải khẳng định có, không được trả lời lấp lửng "không chắc chắn".
-
-TRẢ LỜI bằng MỘT JSON object duy nhất, theo đúng thứ tự khóa sau (mô tả cảnh TRƯỚC, kết luận SAU). Không markdown, không lời mở đầu hay kết, dùng dấu ngoặc kép chuẩn JSON, ký tự đầu là { và ký tự cuối là }:
+TRẢ LỜI bằng MỘT JSON object duy nhất, theo đúng thứ tự khóa sau. Không markdown, không lời mở đầu hay kết, dùng dấu ngoặc kép chuẩn JSON, ký tự đầu là { và ký tự cuối là }:
 
 {
-  "scene_description": "Mô tả khách quan 1-2 câu: ảnh chụp ở đâu, có những vật thể chính nào.",
-  "waste_items": ["tên vật rác nhìn thấy 1", "tên vật rác nhìn thấy 2"],
-  "waste_amount": "khong",
-  "confidence": 0,
-  "natural_report": "Nhận xét tự nhiên bằng tiếng Việt về tình trạng rác trong ảnh.",
-  "waste_type": "Loại rác (chỉ khi có rác, nếu không thì chuỗi rỗng).",
-  "severity": "Nhẹ, Trung bình hoặc Nghiêm trọng (chỉ khi có rác, nếu không thì chuỗi rỗng).",
-  "visual_evidence": "Bằng chứng nhìn thấy trong ảnh.",
-  "spam_reason": "Lý do không hợp lệ nếu không có rác, nếu hợp lệ thì chuỗi rỗng.",
-  "dispatch_plan": "Phương án xử lý dựa đúng trên những gì thấy (chỉ khi có rác)."
+  "image_type": "anh_thuc_te",
+  "description": "Mô tả khách quan 2-3 câu: ảnh chụp ở đâu, bối cảnh, những vật thể chính.",
+  "objects": ["vật thể 1 kèm trạng thái/vị trí ngắn", "vật thể 2 kèm trạng thái/vị trí ngắn"],
+  "surface_condition": "Mô tả ngắn mặt đất/mặt nước/vỉa hè nhìn thấy và những vật nằm trên đó."
 }
 
 Quy tắc điền:
-- waste_items: liệt kê tối đa 6 vật rác nổi bật bạn nhìn thấy; không có rác thì để [].
-- waste_amount chỉ nhận một trong ba giá trị: "khong" (không thấy rác), "it" (chỉ 1-2 vật rác nhỏ lẻ), "nhieu" (từ 3 vật rác trở lên, hoặc một đống/đám/bãi rác cần dọn dẹp).
-- confidence: số nguyên 0-100, mức chắc chắn về kết luận waste_amount.
+- image_type chỉ nhận một trong các giá trị: "anh_thuc_te" (ảnh chụp cảnh ngoài đời thật: đường phố, sông kênh, bãi đất, nhà cửa...), "anh_man_hinh" (ảnh chụp màn hình điện thoại/máy tính, giao diện ứng dụng, tin nhắn, trang web), "anh_do_hoa" (hình vẽ, logo, poster, meme, tài liệu, ảnh nhiều chữ), "anh_nguoi" (chân dung, selfie, ảnh nhóm người là chủ thể), "khac".
+- objects: liệt kê tối đa 12 vật thể nhìn thấy rõ, mỗi mục kèm trạng thái hoặc vị trí ngắn, ví dụ: "túi nilon đen nằm dưới đất", "xe máy đang đỗ", "cây xanh". Gọi đúng tên vật như bạn thấy.
+"""
+
+AI_INVENTORY_PROMPT = """Bạn là AI kiểm kê vật thể trong ảnh. Hãy nhìn thật kỹ ảnh và liệt kê TẤT CẢ vật thể bạn thấy, từ vật lớn đến vật nhỏ, kể cả vật nằm dưới đất, ven đường, trôi trên mặt nước hay chồng chất thành đống. Chỉ nói những gì thật sự nhìn thấy, không suy đoán.
+
+TRẢ LỜI bằng MỘT JSON object duy nhất, theo đúng thứ tự khóa sau. Không markdown, không lời mở đầu hay kết, dùng dấu ngoặc kép chuẩn JSON, ký tự đầu là { và ký tự cuối là }:
+
+{
+  "image_type": "anh_thuc_te",
+  "items": ["vật thể 1 (số lượng ước chừng, trạng thái)", "vật thể 2 (số lượng ước chừng, trạng thái)"],
+  "summary": "Một câu tóm tắt toàn cảnh ảnh."
+}
+
+image_type chỉ nhận một trong các giá trị: "anh_thuc_te" (ảnh chụp cảnh ngoài đời thật), "anh_man_hinh" (ảnh chụp màn hình điện thoại/máy tính, giao diện ứng dụng, tin nhắn, trang web), "anh_do_hoa" (hình vẽ, logo, poster, meme, tài liệu, ảnh nhiều chữ), "anh_nguoi" (chân dung, selfie, ảnh nhóm người là chủ thể), "khac".
+"""
+
+AI_REPORT_PROMPT = """Ảnh này là ảnh hiện trường có rác thải. Thông tin đã được xác nhận:
+- Mô tả cảnh: {{SCENE}}
+- Vật rác đã xác định: {{ITEMS}}
+
+Hãy viết báo cáo ngắn gọn bằng tiếng Việt cho đội dọn dẹp. Chỉ dựa trên thông tin trên và những gì nhìn thấy trong ảnh, không thêm vật thể không có, viết chắc chắn, không dùng các từ "có thể" hay "dường như".
+
+TRẢ LỜI bằng MỘT JSON object duy nhất, không markdown, dùng dấu ngoặc kép chuẩn JSON:
+{
+  "natural_report": "1-2 câu nhận xét về tình trạng rác tại hiện trường.",
+  "waste_type": "Loại rác chính nhìn thấy (ví dụ: rác thải nhựa, bao bì, rác sinh hoạt...).",
+  "severity": "Nhẹ, Trung bình hoặc Nghiêm trọng.",
+  "dispatch_plan": "Phương án xử lý cụ thể: số người, dụng cụ, phương tiện phù hợp với tình trạng nhìn thấy."
+}
 """
 
 
-def _to_int(value, default=0):
-    try:
-        return max(0, min(100, int(float(str(value).strip().rstrip("%")))))
-    except Exception:
-        return default
-
-
-def _clean_items(value):
-    """Chuẩn hóa danh sách vật rác và loại các vật thể hay bị nhận nhầm (phao, cầu, thuyền...)."""
+def _clean_objects(value, limit=12):
     if isinstance(value, str):
         value = [value]
-    items = []
+    out = []
     if isinstance(value, list):
         for entry in value:
             if isinstance(entry, dict):
-                name = str(entry.get("item") or entry.get("name") or "").strip()
-                where = str(entry.get("where") or entry.get("location") or "").strip()
+                name = str(entry.get("item") or entry.get("name") or entry.get("object") or "").strip()
+                where = str(entry.get("where") or entry.get("status") or "").strip()
                 entry = f"{name} ({where})" if name and where else name
             entry = str(entry or "").strip()
-            if len(entry) >= 3 and not _NOT_WASTE_WORDS.search(_fold(entry)):
-                items.append(entry)
-    return items[:10]
+            if len(entry) >= 2:
+                out.append(entry)
+    return out[:limit]
 
 
-def _waste_keyword_hits(text):
-    """Đếm từ khóa về rác trong mô tả của AI (0 nếu mô tả phủ định kiểu 'không thấy rác')."""
-    folded = _fold(text)
-    if re.search(r"\bkhong\s*(co|thay|nhin thay|phat hien)\b.{0,25}\brac", folded):
-        return 0, False
-    hits = sum(1 for kw in _WASTE_KEYWORDS if re.search(rf"\b{kw}\b", folded))
-    return hits, bool(_STRONG_WASTE_RE.search(folded))
+def _normalize_image_kind(raw_type, text_blob):
+    """Trả về 'real' | 'screen' | 'graphic' | 'person' | 'other'."""
+    f = _fold(str(raw_type or "").replace("_", " "))
+    blob = _fold(text_blob)
+    if re.search(r"man hinh|screenshot|giao dien", f) or _UI_RE.search(blob):
+        return "screen"
+    if re.search(r"do hoa|poster|logo|meme|tai lieu|ve tay|minh hoa", f):
+        return "graphic"
+    if re.search(r"nguoi|chan dung|selfie|anh the", f):
+        return "person"
+    if not f or re.search(r"thuc te|anh that|photo|hien truong", f):
+        return "real"
+    return "other"
 
 
-def _normalize_amount(parsed):
-    """Đưa waste_amount về 'khong' | 'it' | 'nhieu'; hỗ trợ cả định dạng cũ (contains_waste...)."""
-    raw = _fold(parsed.get("waste_amount"))
-    if raw in ("nhieu", "many", "heavy", "lot", "high", "dong", "nhieu rac"):
-        return "nhieu"
-    if raw in ("it", "vai", "few", "light", "low", "nhe", "mot it"):
-        return "it"
-    if raw in ("khong", "none", "no", "0", "khong co", "khong co rac"):
-        return "khong"
-    # Không có/không hiểu waste_amount: suy từ các khóa kiểu cũ
-    if normalize_bool(parsed.get("is_waste_amount_sufficient")):
-        return "nhieu"
-    if normalize_bool(parsed.get("contains_waste")):
-        return "it"
-    return "khong"
+def assess_scene(scene):
+    """CODE kết luận có rác hay không từ mô tả trung lập. Trả về dict kết quả."""
+    desc = scene["description"]
+    objects = scene["objects"]
+    surface = scene["surface_condition"]
+    kind = _normalize_image_kind(scene.get("image_type"), " ".join([desc, surface] + objects))
 
+    waste_objects = []
+    for obj in objects:
+        f = _fold(obj)
+        if _NOT_WASTE_WORDS.search(f) or not _WASTE_TERM_RE.search(f):
+            continue
+        if _BIN_ONLY_RE.search(f) and not _BIN_OVERFLOW_RE.search(f):
+            continue
+        waste_objects.append(obj)
 
-def _normalize_ai_result(parsed):
-    if not isinstance(parsed, dict):
-        raise ValueError("Kết quả AI không phải object JSON.")
-
-    for key in [
-        "scene_description", "natural_report", "waste_type", "severity",
-        "visual_evidence", "spam_reason", "dispatch_plan",
-    ]:
-        parsed[key] = str(parsed.get(key, "") or "").strip()
-
-    parsed["waste_items"] = _clean_items(parsed.get("waste_items"))
-    parsed["confidence"] = _to_int(parsed.get("confidence"), 0)
-
-    amount = _normalize_amount(parsed)
-    items = parsed["waste_items"]
-    # Chỉ dùng mô tả khách quan của cảnh làm bằng chứng đối chiếu (không dùng phần kết luận của chính AI)
-    hits, strong = _waste_keyword_hits(parsed["scene_description"] or parsed["natural_report"])
-    note = ""
-
-    # AI nói có rác nhưng không có bất kỳ bằng chứng nào (không vật rác, mô tả không nhắc rác) -> hạ xuống "không"
-    if amount != "khong" and not items and hits == 0 and not strong:
-        amount, note = "khong", "AI nói có rác nhưng không nêu được vật rác nào."
-    # "Nhiều rác" nhưng gần như không có bằng chứng (dưới 2 vật, mô tả không nhắc tới rác) -> chỉ coi là ít
-    elif amount == "nhieu" and len(items) < 2 and hits == 0 and not strong:
-        amount, note = "it", "AI nói nhiều rác nhưng gần như không nêu được bằng chứng trong mô tả."
-    # AI tự mâu thuẫn: nói không rác nhưng liệt kê/mô tả rác rõ ràng -> tin vào bằng chứng
-    elif amount == "khong" and (len(items) >= 2 or hits >= 2 or strong):
-        amount = "nhieu" if (strong or len(items) >= 3 or hits >= 3) else "it"
-        note = "AI mô tả có rác nên được điều chỉnh theo bằng chứng trong mô tả."
-
-    parsed["waste_amount"] = amount
-    parsed["contains_waste"] = amount in ("it", "nhieu")
-    parsed["is_waste_amount_sufficient"] = amount == "nhieu" or len(items) >= 3
-    parsed["decision_note"] = note
-
-    if parsed["contains_waste"]:
-        evidence = parsed["scene_description"]
-        if items:
-            evidence = f"{evidence} Rác nhìn thấy: {'; '.join(items)}".strip()
-        parsed["visual_evidence"] = evidence or parsed["visual_evidence"]
-        if not parsed["natural_report"]:
-            parsed["natural_report"] = parsed["scene_description"] or "Phát hiện rác thải trong ảnh."
-        if not parsed["waste_type"]:
-            parsed["waste_type"] = "Rác thải hỗn hợp"
-        if not parsed["severity"]:
-            parsed["severity"] = "Nghiêm trọng" if amount == "nhieu" else "Nhẹ"
-        if not parsed["dispatch_plan"]:
-            parsed["dispatch_plan"] = "Cử đội dọn dẹp đến thu gom và phân loại rác tại hiện trường."
-        parsed["spam_reason"] = ""
-        if not parsed["is_waste_amount_sufficient"]:
-            parsed["spam_reason"] = "Chỉ thấy rất ít rác (1-2 vật nhỏ), chưa đủ để cử đội dọn dẹp."
+    blob = _fold(" ".join([desc, surface]))
+    if re.search(r"\bkhong\s*(co|thay|nhin thay|phat hien)\b.{0,25}\brac", blob):
+        text_hits, strong = 0, False
     else:
-        scene = parsed["scene_description"]
-        parsed["natural_report"] = "Không thấy rác thải rõ ràng trong ảnh." + (
-            f" Nội dung ảnh: {scene}" if scene else ""
+        cleaned = _BIN_ONLY_RE.sub(" ", blob)
+        text_hits = len({m.group(0) for m in _WASTE_TERM_RE.finditer(cleaned)})
+        strong = bool(_STRONG_WASTE_RE.search(cleaned)) or any(
+            _STRONG_WASTE_RE.search(_fold(o)) for o in objects
         )
-        parsed["waste_type"] = ""
-        parsed["severity"] = ""
-        parsed["dispatch_plan"] = ""
-        parsed["spam_reason"] = note or parsed["spam_reason"] or "Ảnh không có rác thải rõ ràng."
 
-    return parsed
+    evidence = max(len(waste_objects), min(text_hits, 3))
+    if kind in ("screen", "graphic"):
+        amount = "khong"
+    elif strong or evidence >= 3:
+        amount = "nhieu"
+    elif evidence >= 1:
+        amount = "it"
+    else:
+        amount = "khong"
+
+    return {
+        "kind": kind,
+        "amount": amount,
+        "waste_objects": waste_objects,
+        "evidence": evidence,
+        "strong": strong,
+    }
 
 
-def _ai_json_call(prompt, image_bytes, max_tokens=800):
+_KIND_REASONS = {
+    "screen": "Ảnh chụp màn hình/giao diện ứng dụng, không phải ảnh hiện trường.",
+    "graphic": "Ảnh đồ họa/tài liệu, không phải ảnh chụp hiện trường.",
+    "person": "Ảnh chân dung/người, không có rác thải rõ ràng ở hiện trường.",
+}
+
+
+def _guess_waste_type(items, text):
+    f = _fold(" ".join(list(items) + [text]))
+    parts = []
+    if re.search(r"nilon|ni lon|tui nhua|chai|ly nhua|mieng nhua|hop com", f):
+        parts.append("nhựa")
+    if re.search(r"giay|carton|hop giay", f):
+        parts.append("giấy")
+    if re.search(r"xop", f):
+        parts.append("xốp")
+    if re.search(r"\blon\b|vo lon|lon (nuoc|bia|nhom|thiec|ngot)", f):
+        parts.append("kim loại")
+    if re.search(r"gach|xay dung|xa ban", f):
+        parts.append("xây dựng")
+    if re.search(r"quan ao|giay dep", f):
+        parts.append("quần áo, giày dép")
+    return "Rác thải " + ", ".join(parts) if parts else "Rác thải hỗn hợp"
+
+
+def _normalize_severity(value, default):
+    f = _fold(value)
+    if "nghiem trong" in f:
+        return "Nghiêm trọng"
+    if "trung binh" in f:
+        return "Trung bình"
+    if f in ("nhe", "it") or f.startswith("nhe"):
+        return "Nhẹ"
+    return default
+
+
+def _ai_json_call(prompt, image_bytes, max_tokens=700):
     """Gọi AI và đọc JSON; nếu AI trả sai định dạng thì hỏi lại đúng một lần."""
     text, raw = _cloudflare_request(prompt, image_bytes, max_tokens=max_tokens)
     try:
@@ -1845,12 +1969,51 @@ def _ai_json_call(prompt, image_bytes, max_tokens=800):
             ) from second_error
 
 
+def _describe(image_bytes, prompt, description_keys, item_keys):
+    """Một lượt MÔ TẢ trung lập; trả về (scene, phản hồi gốc)."""
+    raw, resp = _ai_json_call(prompt, image_bytes, max_tokens=700)
+    if not isinstance(raw, dict):
+        raise RuntimeError("Kết quả mô tả ảnh của AI không phải object JSON.")
+    description = ""
+    for key in description_keys:
+        description = str(raw.get(key) or "").strip()
+        if description:
+            break
+    objects = []
+    for key in item_keys:
+        objects = _clean_objects(raw.get(key))
+        if objects:
+            break
+    if not description and not objects:
+        raise RuntimeError("AI không mô tả được nội dung ảnh.")
+    scene = {
+        "image_type": raw.get("image_type"),
+        "description": description,
+        "objects": objects,
+        "surface_condition": str(raw.get("surface_condition") or "").strip(),
+    }
+    return scene, resp
+
+
+def _merge_unique(*lists, limit=10):
+    seen, out = set(), []
+    for items in lists:
+        for item in items:
+            key = _fold(item)
+            if key and key not in seen:
+                seen.add(key)
+                out.append(item)
+    return out[:limit]
+
+
 def analyze_image_with_cloudflare(image_bytes: bytes):
     """
-    Một lượt gọi AI (nhanh, ít lỗi). Kết luận không chỉ dựa vào chữ 'có/không' của AI mà đối chiếu
-    với danh sách vật rác và mô tả cảnh:
-      - AI nói có rác nhưng không có bằng chứng gì  -> coi là không có rác (tránh báo nhầm phao, cầu...).
-      - AI nói không rác nhưng chính mô tả/vật rác cho thấy có -> tin vào bằng chứng (tránh bỏ sót).
+    Đồng thuận 2 góc nhìn + code kết luận:
+      - Lượt 1 (mô tả cảnh) và lượt 2 (kiểm kê vật thể) đều là câu hỏi TRUNG LẬP, không nhắc tới rác.
+      - Code kết luận từng lượt (assess_scene). Hai lượt cùng thấy nhiều rác -> DUYỆT.
+        Hai lượt đều không thấy đủ rác / là ảnh chụp màn hình -> TỪ CHỐI.
+        Hai lượt bất đồng -> "Cần xem lại" để nhân viên quyết định, không tự duyệt hay tự xóa sai.
+      - Chỉ khi có rác mới nhờ AI viết báo cáo/phương án xử lý.
     """
     if not cloudflare_configured():
         raise RuntimeError(
@@ -1858,9 +2021,101 @@ def analyze_image_with_cloudflare(image_bytes: bytes):
             "CLOUDFLARE_AUTH_TOKEN/CLOUDFLARE_API_TOKEN."
         )
 
-    parsed_raw, raw = _ai_json_call(AI_PROMPT, image_bytes)
-    parsed = _normalize_ai_result(parsed_raw)
-    return parsed, {"ai": raw}
+    scene_a, raw_a = _describe(image_bytes, AI_DESCRIBE_PROMPT, ("description",), ("objects",))
+    scene_b, raw_b = _describe(image_bytes, AI_INVENTORY_PROMPT, ("summary", "description"), ("items", "objects"))
+
+    va = assess_scene(scene_a)
+    vb = assess_scene(scene_b)
+    approve_a = va["amount"] == "nhieu"
+    approve_b = vb["amount"] == "nhieu"
+
+    if approve_a and approve_b:
+        outcome = "approve"
+    elif not approve_a and not approve_b:
+        outcome = "reject"
+    else:
+        outcome = "review"
+
+    # Mô tả/ vật rác lấy từ góc nhìn có thấy rác (nếu có), nếu không lấy lượt 1
+    lead_scene = scene_b if (approve_b and not approve_a) else scene_a
+    items = _merge_unique(va["waste_objects"], vb["waste_objects"])
+    kind = "screen" if "screen" in (va["kind"], vb["kind"]) else va["kind"]
+    amount = "nhieu" if outcome != "reject" else (
+        "it" if "it" in (va["amount"], vb["amount"]) else "khong"
+    )
+
+    parsed = {
+        "image_type": kind,
+        "scene_description": lead_scene["description"],
+        "scene_objects": _merge_unique(scene_a["objects"], scene_b["objects"], limit=16),
+        "waste_items": items,
+        "waste_amount": amount,
+        "contains_waste": outcome != "reject",
+        "is_waste_amount_sufficient": outcome != "reject",
+        "needs_review": outcome == "review",
+        "natural_report": "",
+        "waste_type": "",
+        "severity": "",
+        "visual_evidence": lead_scene["description"],
+        "spam_reason": "",
+        "dispatch_plan": "",
+        "decision_note": (
+            f"Lượt 1: {va['kind']}/{va['amount']} ({va['evidence']} bằng chứng); "
+            f"Lượt 2: {vb['kind']}/{vb['amount']} ({vb['evidence']} bằng chứng) -> {outcome}."
+        ),
+    }
+
+    if outcome == "reject":
+        if kind in _KIND_REASONS and (va["kind"] == kind or vb["kind"] == kind):
+            reason = _KIND_REASONS[kind]
+        elif amount == "it":
+            reason = "Chỉ thấy rất ít rác (1-2 vật nhỏ), chưa đủ để cử đội dọn dẹp."
+        else:
+            reason = "Không thấy rác thải rõ ràng trong ảnh."
+        parsed["spam_reason"] = reason
+        parsed["natural_report"] = reason + (
+            f" Nội dung ảnh: {scene_a['description']}" if scene_a["description"] else ""
+        )
+        return parsed, {"view1": raw_a, "view2": raw_b}
+
+    # ---- Có rác (duyệt hoặc cần xem lại): nhờ AI viết báo cáo, lỗi bước này không làm mất báo cáo ----
+    shown_items = items or lead_scene["objects"]
+    strong = va["strong"] or vb["strong"]
+    default_severity = "Nghiêm trọng" if (strong or len(items) >= 6) else "Trung bình"
+    report, raw_r = {}, None
+    try:
+        prompt = (
+            AI_REPORT_PROMPT
+            .replace("{{SCENE}}", lead_scene["description"] or "(không có)")
+            .replace("{{ITEMS}}", "; ".join(shown_items) or "(xem ảnh)")
+        )
+        report, raw_r = _ai_json_call(prompt, image_bytes, max_tokens=500)
+        if not isinstance(report, dict):
+            report = {}
+    except Exception:
+        report = {}
+
+    natural = str(report.get("natural_report") or "").strip() or (
+        lead_scene["description"] or "Phát hiện nhiều rác thải tại hiện trường."
+    )
+    if outcome == "review":
+        natural = (
+            "⚠️ AI chưa chắc chắn (hai lượt phân tích không thống nhất), cần nhân viên xem lại ảnh. " + natural
+        )
+        parsed["spam_reason"] = "Hai lượt phân tích của AI không thống nhất."
+    parsed["natural_report"] = natural
+    parsed["waste_type"] = str(report.get("waste_type") or "").strip() or _guess_waste_type(
+        shown_items, lead_scene["description"]
+    )
+    parsed["severity"] = _normalize_severity(report.get("severity"), default_severity)
+    parsed["dispatch_plan"] = str(report.get("dispatch_plan") or "").strip() or (
+        "Cử đội dọn dẹp mang găng tay, túi và dụng cụ thu gom đến hiện trường để thu gom, phân loại rác."
+    )
+    if shown_items:
+        parsed["visual_evidence"] = (
+            f"{lead_scene['description']} Rác nhìn thấy: {'; '.join(shown_items)}".strip()
+        )
+    return parsed, {"view1": raw_a, "view2": raw_b, "report": raw_r}
 
 
 # =========================================================
@@ -2132,7 +2387,10 @@ def save_ai_result(report_id, parsed, raw_data):
         and parsed.get("is_waste_amount_sufficient", False)
     )
 
-    status = "Đã duyệt" if valid else "Spam/Từ chối"
+    if parsed.get("needs_review"):
+        status = "Cần xem lại"
+    else:
+        status = "Đã duyệt" if valid else "Spam/Từ chối"
     ai_result = parsed.get("natural_report", "")
 
     _supabase_update(
@@ -2183,6 +2441,8 @@ def get_reports(status=None):
 _AI_LOCK = threading.Lock()
 _AI_IN_PROGRESS = set()
 _LAST_SWEEP = {"ts": 0.0}
+_AI_RETRIES = {}
+AI_AUTO_RETRY_LIMIT = 3          # mỗi báo cáo lỗi được tự thử lại tối đa 3 lần
 PENDING_AI_GRACE_SECONDS = 180   # báo cáo chờ quá 3 phút (luồng nền bị mất) sẽ được nhặt lại
 PENDING_SWEEP_INTERVAL = 60      # tối đa 1 lần quét mỗi phút
 PENDING_SWEEP_BATCH = 3          # mỗi lần quét xử lý tối đa 3 báo cáo
@@ -2259,6 +2519,19 @@ def _sweep_pending_reports():
         )
         for row in rows:
             process_report_ai(row["id"])
+
+        # Tự thử lại báo cáo "Lỗi AI" (lỗi mạng/quá tải thường tự hết), không cần chờ quản trị viên
+        error_rows = _supabase_select(
+            "reports",
+            {"select": "id", "status": "eq.Lỗi AI", "order": "created_at.asc", "limit": "2"},
+        )
+        for row in error_rows:
+            with _AI_LOCK:
+                tries = _AI_RETRIES.get(row["id"], 0)
+                if tries >= AI_AUTO_RETRY_LIMIT:
+                    continue
+                _AI_RETRIES[row["id"]] = tries + 1
+            process_report_ai(row["id"])
     except Exception:
         pass
 
@@ -2316,6 +2589,13 @@ def format_vn_time(value, with_ago=True):
         if ago:
             text += f" ({ago})"
     return text
+
+
+def looks_like_gibberish(text, min_chars=6):
+    """Phát hiện nội dung gõ bừa như 'Aaaaaaa' hoặc 'A' (chữ kéo dài như 'quááááá' vẫn hợp lệ)."""
+    collapsed = re.sub(r"(.)\1{2,}", r"\1", _fold(text))
+    alnum = re.sub(r"[^a-z0-9]", "", collapsed)
+    return len(alnum) < min_chars or len(set(alnum)) <= 2
 
 
 def report_code(report_id):
@@ -2506,7 +2786,7 @@ def show_stats():
     rows = _supabase_select("reports", {"select": "status"})
     total = len(rows)
     approved = sum(1 for row in rows if row.get("status") == "Đã duyệt")
-    pending = sum(1 for row in rows if row.get("status") in ("Đang xử lý", "Lỗi AI"))
+    pending = sum(1 for row in rows if row.get("status") in ("Đang xử lý", "Lỗi AI", "Cần xem lại"))
     cleaned = sum(1 for row in rows if row.get("status") == "Đã dọn")
 
     stats = [
@@ -2657,12 +2937,12 @@ def page_report():
             missing.append("Tên người báo cáo")
         if not uploaded:
             missing.append("Ảnh hiện trường")
-        if len(description.strip()) < 10:
-            missing.append("Mô tả (ít nhất 10 ký tự)")
+        if len(description.strip()) < 10 or looks_like_gibberish(description, 8):
+            missing.append("Mô tả rõ ràng (ít nhất 10 ký tự, viết thành câu có nghĩa)")
         if latitude is None or longitude is None:
             missing.append("Vị trí trên bản đồ (bấm vào bản đồ để chọn)")
-        if not location.strip():
-            missing.append("Địa chỉ / ghi chú vị trí")
+        if looks_like_gibberish(location, 5):
+            missing.append("Địa chỉ / ghi chú vị trí (ghi rõ đường, phường...)")
         if missing:
             st.error(
                 "⚠️ Vui lòng điền đủ thông tin trước khi gửi. Còn thiếu:\n\n"
@@ -3351,6 +3631,29 @@ def page_spam():
 
     if st.session_state.get("admin_full_access", False):
         st.caption("🔐 Bạn đang truy cập bằng quyền quản trị toàn quyền.")
+
+    review_rows = get_reports("Cần xem lại")
+    if review_rows:
+        st.markdown("### 🔎 Cần nhân viên xem lại")
+        st.caption("AI phân tích hai lượt nhưng kết quả không thống nhất. Hãy xem ảnh rồi quyết định.")
+        for row in review_rows:
+            with st.container(border=True):
+                st.write(f"**Mã:** #{report_code(row['id'])}  •  🕒 {format_vn_time(row['created_at'])}")
+                st.write(f"**Người gửi:** {row['reporter_name']}")
+                if row.get("ai_result"):
+                    st.write(f"🤖 {row['ai_result']}")
+                if not show_stored_image(row["image_path"]):
+                    st.caption("Không tải được ảnh.")
+                if st.button("✅ Đây là rác, duyệt", key=f"rv_ok_{row['id']}", use_container_width=True):
+                    _supabase_update("reports", {"id": row["id"]}, {"status": "Đã duyệt"})
+                    st.rerun()
+                if st.button("🚫 Không phải rác, từ chối", key=f"rv_no_{row['id']}", use_container_width=True):
+                    _supabase_update("reports", {"id": row["id"]}, {"status": "Spam/Từ chối"})
+                    st.rerun()
+                if st.button("🗑️ Xóa báo cáo này", key=f"rv_del_{row['id']}", use_container_width=True):
+                    delete_report(row["id"])
+                    st.rerun()
+        st.markdown("---")
 
     rows = get_reports("Spam/Từ chối")
 
