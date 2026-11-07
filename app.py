@@ -2400,19 +2400,32 @@ def parse_location_coordinates(location):
 # 6. UI HELPERS
 # =========================================================
 
-# Nguồn bản đồ: CARTO là chính; nếu 4 giây mà không tải được ô bản đồ nào thì tự chuyển sang Esri rồi OpenStreetMap.
-MAP_MAIN_TILES = (
-    "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
-    "© OpenStreetMap contributors © CARTO",
-)
+# Nguồn bản đồ. Lưu ý: CARTO đã yêu cầu API key (hiện chữ "API KEY REQUIRED" trên bản đồ) nên KHÔNG dùng nữa.
+# Esri là nguồn chính; nếu 4 giây mà không tải được ô nào thì tự chuyển sang OpenStreetMap rồi các nguồn khác.
+# Người dùng cũng tự đổi được nguồn bằng nút lớp bản đồ ở góc phải trên.
+MAP_MAIN_TILES = {
+    "name": "Bản đồ đường (Esri)",
+    "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    "attribution": "Tiles © Esri",
+}
 MAP_FALLBACK_TILES = [
     {
-        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-        "attribution": "Tiles © Esri",
-    },
-    {
+        "name": "OpenStreetMap",
         "url": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         "attribution": "© OpenStreetMap contributors",
+        "subdomains": "abc",
+    },
+    {
+        "name": "OpenStreetMap (HOT)",
+        "url": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+        "attribution": "© OpenStreetMap contributors, Humanitarian OSM Team",
+        "subdomains": "abc",
+    },
+    {
+        "name": "Vệ tinh (Esri)",
+        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attribution": "Tiles © Esri",
+        "subdomains": "abc",
     },
 ]
 
@@ -2420,21 +2433,28 @@ _MAP_FALLBACK_JS = r"""
 window.addEventListener("load", function () {
   try {
     var m = __MAP__;
-    var current = __MAIN__;
-    var fallbacks = __PROVIDERS__;
-    var idx = -1, tries = 0;
+    var main = __MAIN__;
+    var defs = __PROVIDERS__;
+    var layers = [main];
+    defs.forEach(function (p) {
+      layers.push(L.tileLayer(p.url, { attribution: p.attribution, subdomains: p.subdomains || "abc", maxZoom: 19 }));
+    });
+    var base = {};
+    base[__MAIN_NAME__] = main;
+    defs.forEach(function (p, i) { base[p.name] = layers[i + 1]; });
+    L.control.layers(base, null, { collapsed: true, position: "topright" }).addTo(m);
+
+    var idx = 0, tries = 0;
     setTimeout(function () { try { m.invalidateSize(); } catch (e) {} }, 300);
     var timer = setInterval(function () {
       try {
         tries += 1;
         if (document.querySelectorAll(".leaflet-tile-loaded").length > 0) { clearInterval(timer); return; }
         if (tries >= 2) {
-          if (idx + 1 >= fallbacks.length) { if (tries >= 6) { clearInterval(timer); } return; }
-          m.removeLayer(current);
+          if (idx + 1 >= layers.length) { if (tries >= 6) { clearInterval(timer); } return; }
+          m.removeLayer(layers[idx]);
           idx += 1; tries = 0;
-          var p = fallbacks[idx];
-          current = L.tileLayer(p.url, { attribution: p.attribution, subdomains: "abc", maxZoom: 19 });
-          current.addTo(m);
+          layers[idx].addTo(m);
         }
       } catch (e) { clearInterval(timer); }
     }, 2000);
@@ -2444,7 +2464,7 @@ window.addEventListener("load", function () {
 
 
 def make_base_map(location, zoom_start=13):
-    """Bản đồ nền dùng chung cho mọi trang, có tự chuyển nguồn khi bản đồ bị xám."""
+    """Bản đồ nền dùng chung cho mọi trang: tự chuyển nguồn khi bản đồ bị xám, có nút đổi nguồn thủ công."""
     fmap = folium.Map(
         location=location,
         zoom_start=zoom_start,
@@ -2453,10 +2473,9 @@ def make_base_map(location, zoom_start=13):
         prefer_canvas=True,
     )
     main = folium.TileLayer(
-        tiles=MAP_MAIN_TILES[0],
-        attr=MAP_MAIN_TILES[1],
-        name="Bản đồ",
-        subdomains="abcd",
+        tiles=MAP_MAIN_TILES["url"],
+        attr=MAP_MAIN_TILES["attribution"],
+        name=MAP_MAIN_TILES["name"],
         max_zoom=19,
     )
     main.add_to(fmap)
@@ -2464,7 +2483,8 @@ def make_base_map(location, zoom_start=13):
         _MAP_FALLBACK_JS
         .replace("__MAP__", fmap.get_name())
         .replace("__MAIN__", main.get_name())
-        .replace("__PROVIDERS__", json.dumps(MAP_FALLBACK_TILES))
+        .replace("__MAIN_NAME__", json.dumps(MAP_MAIN_TILES["name"], ensure_ascii=False))
+        .replace("__PROVIDERS__", json.dumps(MAP_FALLBACK_TILES, ensure_ascii=False))
     )
     fmap.get_root().script.add_child(folium.Element(js))
     return fmap
