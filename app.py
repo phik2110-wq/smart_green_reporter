@@ -33,33 +33,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Lỗi "Failed to execute 'removeChild' on 'Node'" xảy ra khi trình duyệt (Chrome/Edge) TỰ DỊCH trang:
-# nó chèn thẻ <font> vào giao diện React của Streamlit làm React hỏng khi cập nhật. Trang mặc định là lang="en"
-# nên trình duyệt đề nghị dịch. Khai báo trang là tiếng Việt và cấm dịch để lỗi này không xảy ra nữa.
-components.html(
-    """
-<script>
-(function () {
-  try {
-    var d = window.parent.document;
-    d.documentElement.setAttribute("lang", "vi");
-    d.documentElement.setAttribute("translate", "no");
-    d.documentElement.classList.add("notranslate");
-    if (!d.querySelector('meta[name="google"]')) {
-      var m = d.createElement("meta");
-      m.setAttribute("name", "google");
-      m.setAttribute("content", "notranslate");
-      d.head.appendChild(m);
-    }
-    var root = d.getElementById("root");
-    if (root) { root.setAttribute("translate", "no"); root.classList.add("notranslate"); }
-    d.body.setAttribute("translate", "no");
-  } catch (e) {}
-})();
-</script>
-""",
-    height=0,
-)
+# Không sửa trực tiếp window.parent.document từ components.html.
+# Việc can thiệp DOM bên ngoài iframe có thể xung đột với React của Streamlit
+# khi ứng dụng rerun, đặc biệt trên trình duyệt điện thoại.
+# Nếu Chrome/Edge tự dịch trang, hãy tắt dịch tự động cho riêng website này
+# trong menu trình duyệt (không cần chạy JavaScript sửa DOM).
 
 CF_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct"
 MAX_IMAGE_MB = 10
