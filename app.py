@@ -17,6 +17,7 @@ import folium
 from folium.plugins import HeatMap, MarkerCluster
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 from streamlit_folium import st_folium
 
@@ -30,6 +31,34 @@ st.set_page_config(
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="collapsed",
+)
+
+# Lỗi "Failed to execute 'removeChild' on 'Node'" xảy ra khi trình duyệt (Chrome/Edge) TỰ DỊCH trang:
+# nó chèn thẻ <font> vào giao diện React của Streamlit làm React hỏng khi cập nhật. Trang mặc định là lang="en"
+# nên trình duyệt đề nghị dịch. Khai báo trang là tiếng Việt và cấm dịch để lỗi này không xảy ra nữa.
+components.html(
+    """
+<script>
+(function () {
+  try {
+    var d = window.parent.document;
+    d.documentElement.setAttribute("lang", "vi");
+    d.documentElement.setAttribute("translate", "no");
+    d.documentElement.classList.add("notranslate");
+    if (!d.querySelector('meta[name="google"]')) {
+      var m = d.createElement("meta");
+      m.setAttribute("name", "google");
+      m.setAttribute("content", "notranslate");
+      d.head.appendChild(m);
+    }
+    var root = d.getElementById("root");
+    if (root) { root.setAttribute("translate", "no"); root.classList.add("notranslate"); }
+    d.body.setAttribute("translate", "no");
+  } catch (e) {}
+})();
+</script>
+""",
+    height=0,
 )
 
 CF_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct"
@@ -1232,6 +1261,10 @@ html, body, .stApp { color-scheme: light !important; }
     border-radius: 14px !important;
 }
 .stApp [data-testid="stExpander"] summary * { color: #111111 !important; }
+/* Khung rỗng chứa đoạn script chặn tự dịch */
+iframe[height="0"] { display: none !important; }
+.stApp [data-testid="stElementContainer"]:has(> iframe[height="0"]),
+.stApp [data-testid="element-container"]:has(> iframe[height="0"]) { display: none !important; }
 </style>
 """,
     unsafe_allow_html=True,
